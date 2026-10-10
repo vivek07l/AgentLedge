@@ -1,0 +1,50 @@
+services:
+  # 1. AgentsLedge FastAPI Backend
+  - type: web
+    name: agentsledge-backend
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn src.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentsledge-db
+          property: connectionString
+      - key: CORS_ORIGINS
+        value: https://agentsledge-frontend.onrender.com
+      - key: OAUTH_ISSUER
+        value: https://agentsledge-backend.onrender.com
+      - key: AGENTMESH_MCP_RESOURCE_URL
+        value: https://agentmesh-mcp.onrender.com/mcp
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  # 2. AgentsLedge React Frontend (Static Site)
+  - type: web
+    name: agentsledge-frontend
+    env: static
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: "./frontend/build"
+    autoDeploy: false
+    routes:
+      - type: rewrite
+        source: "/*"
+        destination: "/index.html"
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://agentsledge-backend.onrender.com
+
+databases:
+  # PostgreSQL Database for Backend Persistence
+  - name: agentsledge-db
+    plan: free
+    databaseName: agentsledge
+    user: agentsledge_user
