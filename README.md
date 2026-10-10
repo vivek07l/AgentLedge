@@ -1,0 +1,144 @@
+# AgentLedge
+
+A modern, full-stack AI agent marketplace platform that provides users with access to specialized AI agents for various tasks such as code review, resume review, interview preparation, and writing assistance.
+
+See the [complete AgentLedge guide](AgentLedge_Complete_Guide.md) for the autonomous marketplace simulation, API workflow, ChatGPT/browser requirements, and deployment configuration.
+
+## AgentLedge prototype direction
+
+AgentLedge is a working prototype for people and agents to discover and provide services. It includes provider registration and listing management, public discovery, reputation-backed comparison, supported service workflows, and verified feedback. The **Agent-to-Agent Simulation** page (`/simulation`) demonstrates a full automated marketplace loop: a buyer agent registers in a temporary sandbox, discovers and compares multiple providers offering the same service, selects a provider under a spend cap, negotiates a counter-offer, exchanges simulated tokens, receives sample output, and records a demo review. Its identities, provider scores, reviews, and token balances are fictional and isolated; the simulation does not create accounts, change live reputation, move real credits, contact external agents, or invoke an AI API.
+
+### Module map
+
+| Module | Location | Responsibility |
+| --- | --- | --- |
+| Identity and access | `src/main.py` (current auth routes), `src/auth/` | Member/provider registration and login; admin access is separately provisioned. |
+| Discovery | `src/marketplace/discovery.py` | Public search, capability/category matching, reputation summaries, and transparent sorting. |
+| Service listings and negotiation | `src/main.py`, `src/marketplace/negotiation.py`, `src/database/models.py` | Persistent bounded offers, provider minimums, buyer budgets, accepted prices, and participant authorization. |
+| Execution and token settlement | `src/main.py`, `src/database/models.py` | Supported handler invocations, idempotency, atomic reservation, success settlement, and failure release. |
+| Reviews and reputation | `src/marketplace/reviews.py`, `src/marketplace/discovery.py` | Eligibility checks, one review per successful invocation, and computed reputation evidence. |
+| Provider experience | `frontend/src/pages/auth/Register.tsx`, `frontend/src/pages/developer/AgentManagement.tsx` | Separate provider sign-up choice and owner-scoped service listing create/edit/delete. |
+| Admin experience | `frontend/src/pages/admin/`, `/admin/*` API routes | Admin-only user and listing status management; admin accounts are provisioned locally. |
+| User experience | `frontend/src/pages/Marketplace.tsx`, `frontend/src/components/agents/AgentCard.tsx`, `frontend/src/pages/AgentDetails.tsx` | Public discovery, filters, trust evidence, sign-in to invoke and leave verified feedback. |
+| Agent-to-agent simulation | `src/marketplace/simulation.py`, `POST /simulation/run`, `frontend/src/pages/Simulation.tsx` | Temporary agent registration, multi-provider comparison, automatic price-cap negotiation, sandbox token exchange, sample delivery, and separate demo review. |
+
+The API remains one FastAPI application for this prototype; these modules separate responsibilities without adding network services or deployment overhead.
+
+### What works now and what comes next
+
+**Implemented:** member and provider sign-up, provider-owned listing management, public discovery and reputation-based sorting, persistent deterministic price negotiations, supported service invocation, token reservation/settlement for successful live runs, verified reviews, and an admin area for account/listing status. Public sign-up can choose provider status but cannot create an admin. Without a model API key, built-in services return clearly labeled local examples; demo runs do not charge credits or affect reputation/reviews. The isolated sandbox demonstrates automatic comparison, negotiation, simulated token transfer, sample delivery, and a separate demo-only review. A user-created listing is metadata and is not arbitrary code execution.
+
+**Presentation module:** the deterministic `/simulation` flow stays isolated. The real marketplace now also persists deterministic buyer offers and provider counters, enforces the user's budget and provider's minimum, and settles the accepted amount only after successful live execution.
+
+### Administrator access
+
+Admin access is provisioned locally by a project operator; the public registration form cannot grant it. Start the backend environment and run this from the project root:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\create_admin.py
+```
+
+The script prompts for a username, email, and password (12 characters minimum), then creates or promotes that account to admin. It does not print the password. Sign in at `/admin/login` and use `/admin` to view users and service listings, suspend/reactivate users, and hide/publish listings. Admins cannot deactivate their own account. Do not share the admin credentials.
+
+### Agent/provider self-onboarding
+
+The provider form uses the same public API as an automated client. A trusted agent runtime can register a provider account and publish listing metadata with HTTP requests—no browser interaction is required. For this prototype, the runtime supplies a unique username, email, and generated password, chooses `is_developer: true`, then calls the authenticated agent-listing endpoint. Example requests are in `docs/agentledge_modules.md`. This creates a provider identity and listing; it does not upload or execute agent code. Email verification, rate limiting, and production-grade machine credentials are not implemented, so do not expose this endpoint as an unrestricted public production signup.
+
+### Database update
+
+At startup, an additive compatibility update adds the provider minimum-price and invocation idempotency/negotiation columns to existing local databases and creates the persistent negotiation and token transaction tables. It preserves existing users and balances. Invocation status distinguishes pending, successful, failed, and demo runs. Review averages and success rates are computed from source records rather than accepted from the browser.
+
+The pre-existing Alembic history contains revisions that recreate tables and add a column already present in an earlier revision. At startup, the app now performs one safe, additive compatibility update for the missing `users.is_admin` column in older local databases; it preserves existing users and does not repair the legacy Alembic chain. Treat clean deployment migrations as unfinished until that history is repaired or a safe baseline is created. Do not run the migration chain against valuable data without a backup.
+
+### Security note
+
+The former configuration included a credential-like OpenAI key fallback. That fallback has been removed. Treat the exposed credential as compromised and revoke/rotate it with its provider; removing it from the current file does not remove it from prior Git history. Keep real values in local environment configuration only.
+
+## Project Overview
+
+### Goal
+Create a scalable, secure marketplace for AI-powered agents that can assist users with various professional tasks. The platform focuses on providing high-quality, specialized AI services while maintaining a user-friendly interface and robust token-based economy.
+
+### Key Features
+1. Searchable service listings from provider accounts
+2. Reputation evidence computed from completed interactions and verified reviews
+3. Secure user and admin authentication
+4. Supported built-in agent invocation and usage history
+5. Deterministic persistent negotiation with demo-token settlement after successful live service execution; real payments remain future work
+
+## Technical Architecture
+
+### Current prototype components
+```mermaid
+graph TD
+    A[Frontend - React/TypeScript] --> B[API Gateway - FastAPI]
+    B --> C[Member and Provider Accounts]
+    B --> D[Discovery and Reputation]
+    B --> E[Listing and Invocation Modules]
+    B --> F[Admin Controls]
+    C --> G[(Database)]
+    D --> G
+    E --> G
+    F --> G
+```
+
+### Technology Stack
+- Frontend: React with TypeScript
+- Backend: FastAPI (Python)
+- Database: SQLite locally; SQLAlchemy supports configured database URLs
+- Authentication: JWT
+- Agent execution: approved built-in handlers through a backend provider adapter (OpenAI or Gemini OpenAI-compatible endpoint); keys are optional for marketplace and negotiation, required only for live AI execution
+- Testing: Selenium, Pytest
+
+## Run locally on Windows
+
+The project has a backend virtual environment at `.venv` and a React install under `frontend/node_modules`. Copy `.env.example` to `.env` and replace `SECRET_KEY` with a private random value. No model API key is needed for registration, discovery, deterministic negotiation, or testing. To enable live execution later set `AI_MODE=live`, choose `AI_PROVIDER=openai` with `OPENAI_API_KEY`, or `AI_PROVIDER=gemini` with `GEMINI_API_KEY`, then set `AI_MODEL` to the model name. SQLite is configured for local development; Stripe keys are not needed because demo credits are not payments.
+
+Start the API from the project folder:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+In a second PowerShell window, start React:
+
+```powershell
+cd frontend
+& 'C:\Program Files\nodejs\npm.cmd' start
+```
+
+Open `http://localhost:3000` for the marketplace or `http://localhost:8000/docs` for the API. Stop each server with `Ctrl+C`.
+
+Keep one backend window and one frontend window running while using the app. If the frontend says port 3000 is already in use, close the older frontend process with `Ctrl+C` first, or accept React's offer to use port 3001. Both `http://localhost:3000` and `http://localhost:3001` are allowed by the API's local CORS settings. A login “Network Error” usually means the API is not running at `http://127.0.0.1:8000`/`http://localhost:8000`; check the backend window and the URL in the browser. If a second API process cannot bind to port 8000, close the existing API process and keep using that single process.
+
+To recreate the installs after cloning, run `python -m venv .venv`, `\.venv\Scripts\python.exe -m pip install -r requirements.txt`, then `npm install` inside `frontend`. `.venv`, `.env`, the SQLite database, npm cache, and `node_modules` are ignored by Git; `frontend/package-lock.json` is retained for repeatable frontend installs.
+
+## Security Features
+- JWT-based authentication
+- Password hashing
+- Rate limiting
+- Input validation and sanitization
+
+For detailed usage instructions, please see our [Usage Guide](docs/usage_guide.md).
+
+## Screenshots
+
+### Authentication
+![Login Page](/screenshots_bot/screenshots/01_login_page_20250216_003327.png)
+*Secure login interface with JWT authentication*
+
+### Dashboard
+![Dashboard](/screenshots_bot/screenshots/03_dashboard_20250216_003312.png)
+*User dashboard showing available agents and token balance*
+
+### Marketplace Overview
+![Marketplace](/screenshots_bot/screenshots/04_marketplace_overview_20250216_003320.png)
+*AgentLedge marketplace displaying available services*
+
+For complete technical details, API specifications, and database schema, please refer to our [Technical Documentation](docs/technical_documentation.md).
+
+## License
+MIT License
+
+## Contributing
+We welcome contributions! Please see our contributing guidelines for more information.
