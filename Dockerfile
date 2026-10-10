@@ -18,4 +18,4 @@ COPY . .
 EXPOSE 8000
 
 # Use gunicorn to run the application
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "src.main:app", "--bind", "0.0.0.0:8000"]
+CMD ["sh", "-c", "gunicorn -w 1 -k uvicorn.workers.UvicornWorker src.main:app --bind 0.0.0.0:${PORT:-8000} --timeout 120"]
