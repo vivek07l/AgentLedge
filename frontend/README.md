@@ -1,4 +1,4 @@
-# AgentLedge frontend
+# AgentsLedge frontend
 
 React and TypeScript marketplace UI. Main routes:
 

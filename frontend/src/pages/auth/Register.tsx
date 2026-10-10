@@ -13,6 +13,7 @@ import {
   FormControlLabel,
   Radio,
   RadioGroup,
+  Stack,
 } from '@mui/material';
 import { useNavigate, useLocation, Link as RouterLink } from 'react-router-dom';
 import { useAuth } from '../../store/AuthContext';
@@ -71,38 +72,70 @@ export const Register: React.FC = () => {
 
   return (
     <Container maxWidth="sm">
-      <Box
-        sx={{
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
+      <Box sx={{ mt: { xs: 4, sm: 6 }, mb: 6 }}>
         <Paper
-          elevation={3}
+          elevation={0}
           sx={{
-            p: 4,
-            width: '100%',
+            p: { xs: 3, sm: 4.5 },
+            bgcolor: '#FFFFFF',
+            border: '2px solid #292929',
+            boxShadow: '6px 6px 0 #171717',
           }}
         >
-          <Typography variant="h4" component="h1" align="center" gutterBottom>
-            Create Account
+          <Stack alignItems="center" sx={{ mb: 3 }}>
+            <Box
+              sx={{
+                width: 38,
+                height: 38,
+                bgcolor: '#F6C900',
+                border: '2px solid #171717',
+                boxShadow: '2px 2px 0 #171717',
+                display: 'grid',
+                placeItems: 'center',
+                color: '#171717',
+                fontWeight: 900,
+                fontSize: 20,
+                clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
+                mb: 1.5,
+              }}
+            >
+              A
+            </Box>
+            <Typography variant="overline" sx={{ color: '#706E66', fontWeight: 800 }}>
+              AGENTSLEDGE // NEW MEMBER REGISTRATION
+            </Typography>
+            <Typography variant="h4" component="h1" sx={{ fontWeight: 850, color: '#171717' }}>
+              Create Account
+            </Typography>
+          </Stack>
+
+          <Typography fontWeight={750} sx={{ mb: 1, color: '#171717' }}>
+            Account role selection:
           </Typography>
-          <Typography
-            variant="body1"
-            color="text.secondary"
-            align="center"
-            sx={{ mb: 4 }}
+          <RadioGroup
+            row
+            name="accountType"
+            value={formik.values.accountType}
+            onChange={formik.handleChange}
+            sx={{ mb: 2 }}
           >
-            Join AgentLedge
-          </Typography>
-          <Typography fontWeight={600} sx={{ mb: 1 }}>How will you use AgentLedge?</Typography>
-          <RadioGroup row name="accountType" value={formik.values.accountType} onChange={formik.handleChange} sx={{ mb: 2 }}>
-            <FormControlLabel value="user" control={<Radio />} label="Discover and use agents" />
-            <FormControlLabel value="provider" control={<Radio />} label="Register agent services" />
+            <FormControlLabel
+              value="user"
+              control={<Radio sx={{ color: '#171717', '&.Mui-checked': { color: '#F6C900' } }} />}
+              label={<Typography variant="body2" fontWeight={650}>Discover & invoke agents</Typography>}
+            />
+            <FormControlLabel
+              value="provider"
+              control={<Radio sx={{ color: '#171717', '&.Mui-checked': { color: '#F6C900' } }} />}
+              label={<Typography variant="body2" fontWeight={650}>Register agent services</Typography>}
+            />
           </RadioGroup>
-          {formik.values.accountType === 'provider' && <Alert severity="info" sx={{ mb: 2 }}>Provider accounts can publish agent service listings after sign-up. You can still use other services too.</Alert>}
+
+          {formik.values.accountType === 'provider' && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Provider accounts can publish and manage services in the marketplace immediately upon registration.
+            </Alert>
+          )}
 
           {(authError || error) && (
             <Alert severity="error" sx={{ mb: 2 }}>
@@ -150,14 +183,9 @@ export const Register: React.FC = () => {
               type="password"
               value={formik.values.confirmPassword}
               onChange={formik.handleChange}
-              error={
-                formik.touched.confirmPassword &&
-                Boolean(formik.errors.confirmPassword)
-              }
-              helperText={
-                formik.touched.confirmPassword && formik.errors.confirmPassword
-              }
-              sx={{ mb: 3 }}
+              error={formik.touched.confirmPassword && Boolean(formik.errors.confirmPassword)}
+              helperText={formik.touched.confirmPassword && formik.errors.confirmPassword}
+              sx={{ mb: 2.5 }}
             />
 
             <FormControlLabel
@@ -166,23 +194,24 @@ export const Register: React.FC = () => {
                   name="acceptTerms"
                   checked={formik.values.acceptTerms}
                   onChange={formik.handleChange}
+                  sx={{ color: '#171717', '&.Mui-checked': { color: '#171717' } }}
                 />
               }
               label={
                 <Typography variant="body2">
                   I have read the{' '}
-                  <Link component={RouterLink} to="/terms" color="primary">
+                  <Link component={RouterLink} to="/terms" sx={{ color: '#171717', fontWeight: 700 }}>
                     Prototype Terms
                   </Link>{' '}
                   and{' '}
-                  <Link component={RouterLink} to="/privacy" color="primary">
+                  <Link component={RouterLink} to="/privacy" sx={{ color: '#171717', fontWeight: 700 }}>
                     Privacy Summary
                   </Link>
                 </Typography>
               }
             />
             {formik.touched.acceptTerms && formik.errors.acceptTerms && (
-              <Typography color="error" variant="caption" display="block">
+              <Typography color="error" variant="caption" display="block" sx={{ mb: 1 }}>
                 {formik.errors.acceptTerms}
               </Typography>
             )}
@@ -190,10 +219,11 @@ export const Register: React.FC = () => {
             <Button
               fullWidth
               variant="contained"
+              color="secondary"
               size="large"
               type="submit"
               disabled={formik.isSubmitting}
-              sx={{ mt: 2, mb: 2 }}
+              sx={{ mt: 2, mb: 2, py: 1.25, fontWeight: 900 }}
             >
               {formik.isSubmitting ? 'Creating account…' : 'Create Account'}
             </Button>
@@ -208,7 +238,7 @@ export const Register: React.FC = () => {
           <Box sx={{ textAlign: 'center' }}>
             <Typography variant="body2" color="text.secondary">
               Already have an account?{' '}
-              <Link component={RouterLink} to="/auth/login" color="primary">
+              <Link component={RouterLink} to="/auth/login" sx={{ color: '#171717', fontWeight: 800 }}>
                 Sign in
               </Link>
             </Typography>

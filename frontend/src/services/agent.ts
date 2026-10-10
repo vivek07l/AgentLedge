@@ -10,7 +10,7 @@ import type {
   Negotiation,
 } from '../types/agent';
 
-const API_BASE_URL = 'http://localhost:8000'; // replace with your actual API base URL
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const agentService = {
   getProviderStats: async (token: string): Promise<ApiResponse<{ settled_tokens_earned: number; settled_transactions: number; token_balance: number; active_listings: number }>> => {
@@ -77,7 +77,7 @@ const agentService = {
     }
   },
 
-  listAgents: async (token: string | null, filters: { query?: string; category?: string; sort?: string } = {}): Promise<ApiResponse<Agent[]>> => {
+  listAgents: async (token: string | null, filters: { query?: string; category?: string; sort?: string; max_price?: number; minimum_rating?: number; minimum_success_rate?: number; limit?: number; offset?: number } = {}): Promise<ApiResponse<Agent[]>> => {
     try {
       const api = token ? createAuthenticatedApi(token) : axios.create({ baseURL: process.env.REACT_APP_API_URL || API_BASE_URL });
       const response = await api.get<Agent[]>('/agents', { params: filters });
@@ -88,6 +88,15 @@ const agentService = {
         error: typeof errorMessage === 'string' ? errorMessage : 'Failed to fetch agents',
         status: 'error'
       };
+    }
+  },
+
+  listCategories: async (): Promise<ApiResponse<string[]>> => {
+    try {
+      const response = await axios.get<string[]>(`${process.env.REACT_APP_API_URL || API_BASE_URL}/marketplace/categories`);
+      return { data: response.data, status: 'success' };
+    } catch {
+      return { error: 'Failed to fetch service categories', status: 'error' };
     }
   },
 
@@ -187,17 +196,10 @@ const agentService = {
       }, { headers: { 'Idempotency-Key': requestKey } });
       return { data: response.data, status: 'success' };
     } catch (error: any) {
-      console.error('Detailed error information:', {
+      console.error('Agent invocation failed:', {
         message: error.message,
         status: error.response?.status,
-        statusText: error.response?.statusText,
         responseData: error.response?.data,
-        requestConfig: {
-          url: error.config?.url,
-          method: error.config?.method,
-          headers: error.config?.headers,
-          data: error.config?.data
-        }
       });
       const errorMessage = error.response?.data?.detail;
       return {

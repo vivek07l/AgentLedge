@@ -36,7 +36,7 @@ export const AdminDashboard: React.FC = () => {
   };
   return <Box sx={{ maxWidth: 1200, mx: 'auto', p: { xs: 2, md: 4 } }}>
     <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
-      <Box><Typography variant="overline" color="primary">AGENTLEDGE CONTROL</Typography><Typography variant="h4" fontWeight={700}>Marketplace admin</Typography><Typography color="text.secondary">Signed in as {user?.username}</Typography></Box>
+      <Box><Typography variant="overline" color="primary">AGENTSLEDGE CONTROL</Typography><Typography variant="h4" fontWeight={700}>Marketplace admin</Typography><Typography color="text.secondary">Signed in as {user?.username}</Typography></Box>
       <Button variant="outlined" onClick={logout}>Sign out</Button>
     </Stack>
     <Stack direction="row" spacing={2} sx={{ mb: 3 }}><Paper sx={{ p: 2, flex: 1 }}><Typography color="text.secondary">Members</Typography><Typography variant="h4">{users.length}</Typography></Paper><Paper sx={{ p: 2, flex: 1 }}><Typography color="text.secondary">Service listings</Typography><Typography variant="h4">{agents.length}</Typography></Paper><Paper sx={{ p: 2, flex: 1 }}><Typography color="text.secondary">Active listings</Typography><Typography variant="h4">{agents.filter(a => a.is_active).length}</Typography></Paper></Stack>

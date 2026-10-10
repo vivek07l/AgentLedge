@@ -1,5 +1,5 @@
 """Persistent, deterministic negotiation rules; this module never calls an AI provider."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -97,7 +97,7 @@ def buyer_offer(db: Session, negotiation: Negotiation, buyer: User, amount: floa
         _offer(db, negotiation, "system", "round_limit", None)
     else:
         _provider_response(db, negotiation, amount)
-    negotiation.updated_at = datetime.utcnow()
+    negotiation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(negotiation)
     return negotiation
@@ -118,7 +118,7 @@ def accept_counter(db: Session, negotiation: Negotiation, buyer: User) -> Negoti
     negotiation.status = "accepted"
     negotiation.agreed_price = _money(counter.amount)
     _offer(db, negotiation, "buyer", "accepted", negotiation.agreed_price, buyer.id)
-    negotiation.updated_at = datetime.utcnow()
+    negotiation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(negotiation)
     return negotiation
@@ -132,7 +132,7 @@ def reject_negotiation(db: Session, negotiation: Negotiation, actor: User) -> Ne
     role = "buyer" if actor.id == negotiation.buyer_id else "provider"
     negotiation.status = "rejected"
     _offer(db, negotiation, role, "rejected", None, actor.id)
-    negotiation.updated_at = datetime.utcnow()
+    negotiation.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(negotiation)
     return negotiation

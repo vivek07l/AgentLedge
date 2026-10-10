@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
     ALGORITHM: str = "HS256"
+    # Canonical public API origin used in OAuth metadata after HTTPS hosting.
+    OAUTH_ISSUER: str = "http://127.0.0.1:8000"
+    AGENTMESH_MCP_RESOURCE_URL: str = "http://127.0.0.1:8011/mcp"
+    OAUTH_RATE_LIMIT_PER_MINUTE: int = 20
 
     class Config:
         env_file = ".env"

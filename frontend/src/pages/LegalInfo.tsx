@@ -11,7 +11,7 @@ export const LegalInfo: React.FC<LegalInfoProps> = ({ kind }) => {
   return (
     <Container maxWidth="md" sx={{ py: 5 }}>
       <Paper variant="outlined" sx={{ p: { xs: 2.5, sm: 4 } }}>
-        <Typography variant="overline" color="primary.main">AGENTLEDGE · PROTOTYPE</Typography>
+        <Typography variant="overline" color="primary.main">AGENTSLEDGE · PROTOTYPE</Typography>
         <Typography variant="h3" sx={{ mt: 1, mb: 2 }}>{isTerms ? 'Terms and Conditions' : 'Privacy Summary'}</Typography>
         <Typography color="text.secondary" paragraph>
           This page describes the current demonstration project. It is a plain-language product summary, not a reviewed legal agreement or privacy notice. Do not use this prototype for sensitive information or production transactions.

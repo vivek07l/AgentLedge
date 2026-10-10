@@ -10,6 +10,7 @@ import {
   ListItemText,
   useTheme,
   useMediaQuery,
+  Typography,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -40,8 +41,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { text: 'Marketplace', icon: <StoreIcon />, path: '/marketplace', requiresAuth: false },
     { text: 'History', icon: <HistoryIcon />, path: '/history', requiresAuth: true },
     { text: 'Profile', icon: <PersonIcon />, path: '/profile', requiresAuth: true },
-    ...(user?.is_admin ? [{ text: 'Admin', icon: <AdminIcon />, path: '/admin', requiresAuth: true }] : []),
-    ...(user?.is_developer ? [{ text: 'My services', icon: <ProviderIcon />, path: '/provider/listings', requiresAuth: true }] : []),
+    ...(user?.is_admin ? [{ text: 'Admin Control', icon: <AdminIcon />, path: '/admin', requiresAuth: true }] : []),
+    ...(user?.is_developer ? [{ text: 'Provider Listings', icon: <ProviderIcon />, path: '/provider/listings', requiresAuth: true }] : []),
   ];
 
   const handleNavigation = (path: string) => {
@@ -56,20 +57,62 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   );
 
   const drawer = (
-    <Box sx={{ overflow: 'auto' }}>
-      <List>
-        {filteredMenuItems.map((item) => (
-          <ListItem key={item.text} disablePadding>
-          <ListItemButton
-              selected={location.pathname === item.path}
-              onClick={() => handleNavigation(item.path)}
-              sx={{ mx: 1, my: .35, borderRadius: 2, '&.Mui-selected': { bgcolor: 'rgba(91,91,214,.1)', color: 'primary.main', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}
-            >
-              <ListItemIcon>{item.icon}</ListItemIcon>
-              <ListItemText primary={item.text} />
-            </ListItemButton>
-          </ListItem>
-        ))}
+    <Box sx={{ overflow: 'auto', py: 2 }}>
+      <Box sx={{ px: 2.5, mb: 2 }}>
+        <Typography
+          variant="overline"
+          sx={{
+            color: '#706E66',
+            fontWeight: 800,
+            letterSpacing: '0.12em',
+            fontSize: '0.7rem',
+          }}
+        >
+          {"// NAVIGATION"}
+        </Typography>
+      </Box>
+      <List disablePadding>
+        {filteredMenuItems.map((item) => {
+          const isSelected = location.pathname === item.path;
+          return (
+            <ListItem key={item.text} disablePadding sx={{ mb: 0.5 }}>
+              <ListItemButton
+                selected={isSelected}
+                onClick={() => handleNavigation(item.path)}
+                sx={{
+                  mx: 1.5,
+                  py: 1,
+                  px: 1.75,
+                  borderRadius: 0,
+                  border: isSelected ? '1px solid #171717' : '1px solid transparent',
+                  borderLeft: isSelected ? '4px solid #F6C900 !important' : '4px solid transparent',
+                  bgcolor: isSelected ? '#171717 !important' : 'transparent',
+                  color: isSelected ? '#FFFFFF' : '#171717',
+                  boxShadow: isSelected ? '2px 2px 0 #F6C900' : 'none',
+                  transition: 'all 0.12s ease',
+                  '&:hover': {
+                    bgcolor: isSelected ? '#171717' : '#EAE5D9',
+                    borderLeft: '4px solid #F6C900',
+                  },
+                  '& .MuiListItemIcon-root': {
+                    color: isSelected ? '#F6C900' : '#5A5A52',
+                    minWidth: 38,
+                  },
+                }}
+              >
+                <ListItemIcon>{item.icon}</ListItemIcon>
+                <ListItemText
+                  primary={item.text}
+                  primaryTypographyProps={{
+                    fontWeight: isSelected ? 800 : 650,
+                    fontSize: '0.9rem',
+                    letterSpacing: '-0.01em',
+                  }}
+                />
+              </ListItemButton>
+            </ListItem>
+          );
+        })}
       </List>
     </Box>
   );
@@ -85,16 +128,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           open={isOpen}
           onClose={onClose}
           ModalProps={{
-            keepMounted: true, // Better open performance on mobile
+            keepMounted: true,
           }}
           sx={{
             display: { xs: 'block', sm: 'none' },
             '& .MuiDrawer-paper': {
               boxSizing: 'border-box',
               width: DRAWER_WIDTH,
-              borderRight: '1px solid',
-              borderColor: 'divider',
-              bgcolor: '#fbfbfe',
+              borderRight: '2px solid #292929',
+              bgcolor: '#F5F2E9',
+              borderRadius: 0,
             },
           }}
         >
@@ -108,9 +151,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             '& .MuiDrawer-paper': {
               boxSizing: 'border-box',
               width: DRAWER_WIDTH,
-              borderRight: '1px solid',
-              borderColor: 'divider',
-              bgcolor: '#fbfbfe',
+              borderRight: '2px solid #292929',
+              bgcolor: '#F5F2E9',
+              borderRadius: 0,
             },
           }}
           open

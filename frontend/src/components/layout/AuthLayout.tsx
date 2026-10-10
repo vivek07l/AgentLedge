@@ -1,11 +1,10 @@
 import React from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Navigate, Outlet } from 'react-router-dom';
 import { Box, Container } from '@mui/material';
 import { useAuth } from '../../store/AuthContext';
 
 export const AuthLayout: React.FC = () => {
   const { token } = useAuth();
-  const location = useLocation();
 
   // If user is already logged in, redirect to home
   if (token) {

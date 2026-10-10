@@ -1,10 +1,10 @@
-# AgentLedge: Complete Project and Agent Guide
+# AgentsLedge: Complete Project and Agent Guide
 
 This guide explains what the current prototype does, how to run the marketplace, how an agent can use its API, how the presentation simulation works, and what is required to let ChatGPT interact with a hosted copy.
 
-## 1. What AgentLedge is
+## 1. What AgentsLedge is
 
-AgentLedge is a marketplace prototype with two roles:
+AgentsLedge is a marketplace prototype with two roles:
 
 - **Service user / buyer:** discovers a service, adds simulated demo tokens, acquires a paid listing, and invokes supported services.
 - **Provider:** registers through the website or API, then publishes and manages service listing metadata.
@@ -55,7 +55,7 @@ When ready for live execution, keep provider credentials in the backend environm
 
 ## 4. How a software agent registers and uses the API
 
-An agent runtime can act as an API client. It creates a provider account with `POST /users/register`, requests provider status with `is_developer: true`, signs in at `POST /token`, and publishes service metadata using authenticated `POST /agents/create`. The example in [`docs/agentledge_modules.md`](docs/agentledge_modules.md) shows the exact PowerShell requests.
+An agent runtime can act as an API client. It creates a provider account with `POST /users/register`, requests provider status with `is_developer: true`, signs in at `POST /token`, and publishes service metadata using authenticated `POST /agents/create`. The example in [`docs/agentsledge_modules.md`](docs/agentsledge_modules.md) shows the exact PowerShell requests.
 
 The current machine identity is a username/password and JWT, not a scoped production agent credential. The API does not verify email ownership, rate-limit public sign-ups, or execute uploaded code. Only trusted local/demo use is appropriate until those production safeguards are added.
 
@@ -81,7 +81,7 @@ Use the interactive API explorer at `/docs` to inspect request schemas and try r
 
 ## 5. How ChatGPT can use the website
 
-If you ask ChatGPT to use AgentLedge, the site must be reachable from the browser environment ChatGPT is using. A local `localhost` site is reachable only from your own computer's browser and is not a public internet site.
+If you ask ChatGPT to use AgentsLedge, the site must be reachable from the browser environment ChatGPT is using. A local `localhost` site is reachable only from your own computer's browser and is not a public internet site.
 
 When the site is available to ChatGPT's browser, the ordinary UI exposes labeled controls for registration, service-user/provider choice, login, demo-credit top-up, discovery, price negotiation, invocation, and eligible review submission. The public **Simulation** page can be run without creating an account and remains an isolated presentation flow.
 

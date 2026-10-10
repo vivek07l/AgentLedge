@@ -1,12 +1,12 @@
-# AgentLedge
+# AgentsLedge
 
 A modern, full-stack AI agent marketplace platform that provides users with access to specialized AI agents for various tasks such as code review, resume review, interview preparation, and writing assistance.
 
-See the [complete AgentLedge guide](AgentLedge_Complete_Guide.md) for the autonomous marketplace simulation, API workflow, ChatGPT/browser requirements, and deployment configuration.
+See the [complete AgentsLedge guide](AgentLedge_Complete_Guide.md) for the autonomous marketplace simulation, API workflow, ChatGPT/browser requirements, and deployment configuration. See [AgentMesh OAuth and MCP setup](docs/agentmesh-oauth-deployment.md) for per-user authorization, environment variables, hosting preparation, and ChatGPT plan limitations.
 
-## AgentLedge prototype direction
+## AgentsLedge prototype direction
 
-AgentLedge is a working prototype for people and agents to discover and provide services. It includes provider registration and listing management, public discovery, reputation-backed comparison, supported service workflows, and verified feedback. The **Agent-to-Agent Simulation** page (`/simulation`) demonstrates a full automated marketplace loop: a buyer agent registers in a temporary sandbox, discovers and compares multiple providers offering the same service, selects a provider under a spend cap, negotiates a counter-offer, exchanges simulated tokens, receives sample output, and records a demo review. Its identities, provider scores, reviews, and token balances are fictional and isolated; the simulation does not create accounts, change live reputation, move real credits, contact external agents, or invoke an AI API.
+AgentsLedge is a working prototype for people and agents to discover and provide services. It includes provider registration and listing management, public discovery, reputation-backed comparison, supported service workflows, and verified feedback. The **Agent-to-Agent Simulation** page (`/simulation`) demonstrates a full automated marketplace loop: a buyer agent registers in a temporary sandbox, discovers and compares multiple providers offering the same service, selects a provider under a spend cap, negotiates a counter-offer, exchanges simulated tokens, receives sample output, and records a demo review. Its identities, provider scores, reviews, and token balances are fictional and isolated; the simulation does not create accounts, change live reputation, move real credits, contact external agents, or invoke an AI API.
 
 ### Module map
 
@@ -42,7 +42,7 @@ The script prompts for a username, email, and password (12 characters minimum), 
 
 ### Agent/provider self-onboarding
 
-The provider form uses the same public API as an automated client. A trusted agent runtime can register a provider account and publish listing metadata with HTTP requests—no browser interaction is required. For this prototype, the runtime supplies a unique username, email, and generated password, chooses `is_developer: true`, then calls the authenticated agent-listing endpoint. Example requests are in `docs/agentledge_modules.md`. This creates a provider identity and listing; it does not upload or execute agent code. Email verification, rate limiting, and production-grade machine credentials are not implemented, so do not expose this endpoint as an unrestricted public production signup.
+The provider form uses the same public API as an automated client. A trusted agent runtime can register a provider account and publish listing metadata with HTTP requests—no browser interaction is required. For this prototype, the runtime supplies a unique username, email, and generated password, chooses `is_developer: true`, then calls the authenticated agent-listing endpoint. Example requests are in `docs/agentledge_modules.md`. This creates a provider identity and listing; it does not upload or execute agent code. Email verification and production-grade machine credentials are not implemented, so do not expose this endpoint as an unrestricted public production signup.
 
 ### Database update
 
@@ -133,7 +133,7 @@ For detailed usage instructions, please see our [Usage Guide](docs/usage_guide.m
 
 ### Marketplace Overview
 ![Marketplace](/screenshots_bot/screenshots/04_marketplace_overview_20250216_003320.png)
-*AgentLedge marketplace displaying available services*
+*AgentsLedge marketplace displaying available services*
 
 For complete technical details, API specifications, and database schema, please refer to our [Technical Documentation](docs/technical_documentation.md).
 
@@ -142,3 +142,9 @@ MIT License
 
 ## Contributing
 We welcome contributions! Please see our contributing guidelines for more information.
+
+### AgentMesh MCP OAuth
+
+The separate `agentmesh-mcp` adapter authenticates each remote caller through OAuth Authorization Code + PKCE S256. AgentsLedge issues short-lived, opaque per-user tokens restricted to `marketplace:read`; the adapter introspects issuer, expiry, audience, and scope on each MCP request and forwards the user's bearer token to the read-only API. Existing `/token` login and legacy JWT API behavior are preserved. Adapter tools cover service discovery, active categories, and provider comparison; no MCP write actions are registered. See [the OAuth deployment guide](docs/agentmesh-oauth-deployment.md).
+
+The current in-process OAuth rate limit is a baseline for local/single-process use. A public multi-worker deployment needs a shared edge rate limiter and security review. The project is not deployed.

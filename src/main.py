@@ -1,16 +1,27 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Header, Request, Form, Response
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import create_engine, update, func
 from sqlalchemy.exc import IntegrityError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from jose import jwt, JWTError
 import json
 from uuid import uuid4
+import base64
+import hashlib
+import hmac
+import secrets
+import re
+import html
+import time
+from collections import defaultdict, deque
+from threading import Lock
+from urllib.parse import urlencode
 
-from src.database.models import Base, User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction
+from src.database.models import Base, User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken
 from src.database.bootstrap import upgrade_legacy_schema
 from src.marketplace.discovery import discover_agents, reputation_for_agent
 from src.marketplace.reviews import create_verified_review
@@ -48,7 +59,19 @@ from src.agents.demo_responses import make_demo_response
 from src.agents.providers import has_provider_credentials, selected_model, selected_provider
 
 settings = get_settings()
-app = FastAPI(title="AgentLedge")
+app = FastAPI(title="AgentsLedge")
+
+
+def _utcnow() -> datetime:
+    """Return a naive UTC datetime suitable for SQLite/PostgreSQL columns without timezone.
+
+    SQLite stores DATETIME columns as naive strings; comparing with a timezone-aware
+    datetime raises TypeError. This helper returns UTC time as a naive datetime consistent
+    with the stored column values.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 
 # Configure CORS
 app.add_middleware(
@@ -60,11 +83,246 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_oauth_rate_events: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_oauth_rate_lock = Lock()
+
+
+@app.middleware("http")
+async def limit_oauth_endpoint_attempts(request: Request, call_next):
+    if request.url.path in {"/oauth/register", "/oauth/authorize", "/oauth/token", "/oauth/revoke"}:
+        source_ip = request.client.host if request.client else "unknown"
+        key = (source_ip, request.url.path)
+        now = time.monotonic()
+        with _oauth_rate_lock:
+            events = _oauth_rate_events[key]
+            while events and events[0] <= now - 60:
+                events.popleft()
+            if len(events) >= max(1, settings.OAUTH_RATE_LIMIT_PER_MINUTE):
+                return JSONResponse(status_code=429, content={"detail": "Too many authorization requests. Please wait and retry."}, headers={"Retry-After": "60"})
+            events.append(now)
+    return await call_next(request)
+
+
 # Database setup
 engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 upgrade_legacy_schema(engine)
 Base.metadata.create_all(bind=engine)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+OAUTH_SCOPES = {"marketplace:read"}
+OAUTH_CODE_TTL_SECONDS = 300
+OAUTH_TOKEN_TTL_SECONDS = 900
+
+
+def _oauth_issuer(request: Request) -> str:
+    configured = getattr(settings, "OAUTH_ISSUER", "").strip().rstrip("/")
+    return configured or str(request.base_url).rstrip("/")
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _pkce_matches(verifier: str, challenge: str) -> bool:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return hmac.compare_digest(actual, challenge)
+
+
+def _oauth_form_html(params: dict[str, str], csrf: str, error: str = "") -> str:
+    hidden = "".join(
+        f'<input type="hidden" name="{html.escape(name, quote=True)}" value="{html.escape(value, quote=True)}">'
+        for name, value in params.items()
+    )
+    message = f'<p role="alert">{html.escape(error)}</p>' if error else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Connect to AgentsLedge</title><style>body{{font:16px system-ui;background:#f4f0e8;color:#211d17;margin:0;padding:8vh 16px}}main{{max-width:460px;margin:auto;background:#fff;padding:32px;border:2px solid #211d17;box-shadow:8px 8px #e5b547}}h1{{font-size:28px}}p{{line-height:1.55}}label{{display:block;margin:16px 0 6px}}input{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #777;font:inherit}}button{{margin-top:22px;padding:12px 18px;border:2px solid #211d17;background:#e5b547;font:700 16px system-ui;cursor:pointer}}small{{display:block;margin-top:16px;color:#555}}</style></head><body><main><p>AGENTSLEDGE Ã‚Â· SECURE CONNECTION</p><h1>Connect your marketplace account</h1><p>This MCP client is requesting read-only access to search public services and compare provider listings. Your password is sent only to this AgentsLedge server.</p>{message}<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="csrf" value="{csrf}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in and approve read-only access</button></form><small>Access expires after 15 minutes. You can revoke it by signing out all active integrations from your account settings when available; current tokens expire automatically.</small></main></body></html>"""
+
+
+def _oauth_request_cookie(request_data: dict[str, str]) -> str:
+    payload = json.dumps(request_data, separators=(",", ":"), sort_keys=True).encode()
+    encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+    signature = hmac.new(settings.SECRET_KEY.encode(), encoded.encode(), hashlib.sha256).digest()
+    return encoded + "." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+
+
+def _decode_oauth_request_cookie(value: str) -> dict[str, str] | None:
+    try:
+        encoded, signature = value.split(".", 1)
+        expected = hmac.new(settings.SECRET_KEY.encode(), encoded.encode(), hashlib.sha256).digest()
+        supplied = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+        if not hmac.compare_digest(expected, supplied):
+            return None
+        payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        result = json.loads(payload)
+        return result if isinstance(result, dict) else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _valid_oauth_redirect_uri(uri: str) -> bool:
+    from urllib.parse import urlparse
+    parsed = urlparse(uri)
+    if parsed.scheme == "https" and parsed.hostname:
+        return True
+    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_authorization_server_metadata(request: Request):
+    issuer = _oauth_issuer(request)
+    return {
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/oauth/authorize",
+        "token_endpoint": f"{issuer}/oauth/token",
+        "registration_endpoint": f"{issuer}/oauth/register",
+        "introspection_endpoint": f"{issuer}/oauth/introspect",
+        "revocation_endpoint": f"{issuer}/oauth/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
+        "response_types_supported": ["code"],
+        "response_modes_supported": ["query"],
+        "grant_types_supported": ["authorization_code"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "code_challenge_methods_supported": ["S256"],
+        "scopes_supported": sorted(OAUTH_SCOPES),
+        "authorization_response_iss_parameter_supported": True,
+        "resource_parameter_supported": True,
+        "client_id_metadata_document_supported": False,
+    }
+
+
+@app.post("/oauth/register", status_code=201)
+async def oauth_register_client(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    redirect_uris = body.get("redirect_uris") if isinstance(body, dict) else None
+    if not isinstance(redirect_uris, list) or not redirect_uris or len(redirect_uris) > 20:
+        raise HTTPException(status_code=400, detail="redirect_uris must be a non-empty list")
+    if any(not isinstance(uri, str) or len(uri) > 2048 or not _valid_oauth_redirect_uri(uri) for uri in redirect_uris):
+        raise HTTPException(status_code=400, detail="Redirect URIs must use HTTPS, except loopback HTTP for local clients")
+    if len(set(redirect_uris)) != len(redirect_uris):
+        raise HTTPException(status_code=400, detail="redirect_uris must not contain duplicates")
+    client_id = secrets.token_urlsafe(24)
+    db.add(OAuthClient(client_id=client_id, redirect_uris_json=json.dumps(redirect_uris)))
+    db.commit()
+    return {"client_id": client_id, "client_id_issued_at": int(_utcnow().timestamp()), "redirect_uris": redirect_uris, "token_endpoint_auth_method": "none", "grant_types": ["authorization_code"], "response_types": ["code"]}
+
+
+@app.get("/oauth/authorize", response_class=HTMLResponse)
+async def oauth_authorize_page(
+    request: Request,
+    response_type: str = Query(...), client_id: str = Query(...), redirect_uri: str = Query(...),
+    state: str = Query(..., min_length=1, max_length=512), scope: str = Query("marketplace:read"),
+    resource: str = Query(...),
+    code_challenge: str = Query(..., min_length=43, max_length=128),
+    code_challenge_method: str = Query(...), db: Session = Depends(get_db),
+):
+    client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
+    if response_type != "code" or not client or redirect_uri not in json.loads(client.redirect_uris_json):
+        raise HTTPException(status_code=400, detail="Invalid OAuth client or redirect URI")
+    if scope != "marketplace:read" or resource != settings.AGENTMESH_MCP_RESOURCE_URL or code_challenge_method != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", code_challenge):
+        raise HTTPException(status_code=400, detail="Only PKCE S256 and marketplace:read are supported")
+    if not state or len(state) > 512:
+        raise HTTPException(status_code=400, detail="A valid state value is required")
+    params = {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect_uri, "state": state, "scope": scope, "resource": resource, "code_challenge": code_challenge, "code_challenge_method": code_challenge_method, "created_at": str(int(_utcnow().timestamp()))}
+    csrf = secrets.token_urlsafe(24)
+    html = _oauth_form_html(params, csrf)
+    response = HTMLResponse(html)
+    response.set_cookie("agentledge_oauth_csrf", csrf, max_age=600, httponly=True, secure=request.url.scheme == "https", samesite="lax", path="/oauth/authorize")
+    response.set_cookie("agentledge_oauth_request", _oauth_request_cookie(params), max_age=600, httponly=True, secure=request.url.scheme == "https", samesite="lax", path="/oauth/authorize")
+    return response
+
+
+@app.post("/oauth/authorize")
+async def oauth_authorize_submit(
+    request: Request,
+    csrf: str = Form(...), username: str = Form(...), password: str = Form(...),
+    response_type: str = Form(...), client_id: str = Form(...), redirect_uri: str = Form(...),
+    state: str = Form(...), scope: str = Form(...), code_challenge: str = Form(...),
+    code_challenge_method: str = Form(...), resource: str = Form(...), created_at: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    signed_request = _decode_oauth_request_cookie(request.cookies.get("agentledge_oauth_request", ""))
+    cookie_csrf = request.cookies.get("agentledge_oauth_csrf", "")
+    fields = {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect_uri, "state": state, "scope": scope, "resource": resource, "code_challenge": code_challenge, "code_challenge_method": code_challenge_method, "created_at": created_at}
+    if not signed_request or not hmac.compare_digest(csrf, cookie_csrf) or any(signed_request.get(key) != value for key, value in fields.items()):
+        raise HTTPException(status_code=400, detail="OAuth authorization request expired or failed CSRF validation")
+    try:
+        created = int(created_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid authorization request")
+    if created > int(_utcnow().timestamp()) or int(_utcnow().timestamp()) - created > 600:
+        raise HTTPException(status_code=400, detail="OAuth authorization request expired")
+    client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
+    user = db.query(User).filter(User.username == username).first()
+    if not client or redirect_uri not in json.loads(client.redirect_uris_json) or not user or not user.is_active or not verify_password(password, user.hashed_password):
+        return HTMLResponse(_oauth_form_html(signed_request, csrf, "Sign-in failed. Check your account details and try again."), status_code=401)
+    raw_code = secrets.token_urlsafe(32)
+    db.add(OAuthAuthorizationCode(code_hash=_token_hash(raw_code), client_id=client_id, user_id=user.id, redirect_uri=redirect_uri, code_challenge=code_challenge, code_challenge_method="S256", audience=resource, expires_at=_utcnow() + timedelta(seconds=OAUTH_CODE_TTL_SECONDS)))
+    db.commit()
+    target = redirect_uri + ("&" if "?" in redirect_uri else "?") + urlencode({"code": raw_code, "state": state, "iss": _oauth_issuer(request)})
+    response = RedirectResponse(target, status_code=303)
+    response.delete_cookie("agentledge_oauth_csrf", path="/oauth/authorize")
+    response.delete_cookie("agentledge_oauth_request", path="/oauth/authorize")
+    return response
+
+
+@app.post("/oauth/token")
+async def oauth_token(
+    grant_type: str = Form(...), code: str = Form(...), redirect_uri: str = Form(...),
+    client_id: str = Form(...), code_verifier: str = Form(...), resource: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    if grant_type != "authorization_code" or not re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", code_verifier):
+        raise HTTPException(status_code=400, detail="Invalid authorization code grant")
+    stored = db.query(OAuthAuthorizationCode).filter(OAuthAuthorizationCode.code_hash == _token_hash(code)).first()
+    if (not stored or stored.client_id != client_id or stored.redirect_uri != redirect_uri
+            or resource != stored.audience or stored.expires_at <= _utcnow()
+            or not _pkce_matches(code_verifier, stored.code_challenge)):
+        raise HTTPException(status_code=400, detail="Authorization code is invalid, expired, or does not match PKCE")
+    if stored.code_challenge_method != "S256":
+        raise HTTPException(status_code=400, detail="Unsupported code challenge method")
+    client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
+    user = db.query(User).filter(User.id == stored.user_id, User.is_active.is_(True)).first()
+    if not client or not user:
+        raise HTTPException(status_code=400, detail="Authorization is no longer valid")
+    db.delete(stored)
+    access_token = secrets.token_urlsafe(48)
+    expires_at = _utcnow() + timedelta(seconds=OAUTH_TOKEN_TTL_SECONDS)
+    db.add(OAuthAccessToken(token_hash=_token_hash(access_token), client_id=client_id, user_id=user.id, scopes="marketplace:read", audience=stored.audience, expires_at=expires_at))
+    db.commit()
+    return {"access_token": access_token, "token_type": "Bearer", "expires_in": OAUTH_TOKEN_TTL_SECONDS, "scope": "marketplace:read"}
+
+
+@app.post("/oauth/introspect")
+async def oauth_introspect(request: Request, db: Session = Depends(get_db)):
+    token = request.headers.get("authorization", "").partition(" ")[2]
+    stored = db.query(OAuthAccessToken).filter(OAuthAccessToken.token_hash == _token_hash(token)).first()
+    if (not stored or stored.revoked_at is not None or stored.expires_at <= _utcnow()
+            or "marketplace:read" not in stored.scopes.split()
+            or stored.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
+        return {"active": False}
+    user = db.query(User).filter(User.id == stored.user_id, User.is_active.is_(True)).first()
+    if user is None:
+        return {"active": False}
+    return {"active": True, "sub": str(user.id), "client_id": stored.client_id, "scope": stored.scopes, "exp": int(stored.expires_at.timestamp()), "iss": _oauth_issuer(request), "aud": stored.audience, "resource": stored.audience}
+
+
+@app.post("/oauth/revoke")
+async def oauth_revoke(token: str = Form(...), client_id: str = Form(...), db: Session = Depends(get_db)):
+    """Revoke a token issued to the named public client; unknown tokens also succeed."""
+    stored = db.query(OAuthAccessToken).filter(OAuthAccessToken.token_hash == _token_hash(token), OAuthAccessToken.client_id == client_id).first()
+    if stored is not None and stored.revoked_at is None:
+        stored.revoked_at = _utcnow()
+        db.commit()
+    return JSONResponse(status_code=200, content={})
 
 class SimulationRequest(BaseModel):
     task: str = Field(min_length=8, max_length=280)
@@ -97,16 +355,9 @@ async def simulate_marketplace_flow(request: SimulationRequest):
     """Run an isolated presentation scenario; never writes to account or trust tables."""
     return run_marketplace_simulation(request.task.strip(), request.token_budget)
 
-# Dependency to get database session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 # Dependency to get current user
 async def get_current_user(
+    request: Request,
     db: Session = Depends(get_db),
     token: Optional[str] = Depends(oauth2_scheme)
 ) -> User:
@@ -118,6 +369,19 @@ async def get_current_user(
     if not token:
         raise credentials_exception
     try:
+        oauth_token = db.query(OAuthAccessToken).filter(OAuthAccessToken.token_hash == _token_hash(token)).first()
+        if oauth_token is not None:
+            if (oauth_token.revoked_at is not None or oauth_token.expires_at <= _utcnow()
+                    or "marketplace:read" not in oauth_token.scopes.split()
+                    or oauth_token.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
+                raise credentials_exception
+            is_read_route = bool(re.fullmatch(r"/agents(?:/\d+(?:/reputation)?)?", request.url.path))
+            if request.method != "GET" or not is_read_route:
+                raise HTTPException(status_code=403, detail="OAuth token is restricted to marketplace read access")
+            user = db.query(User).filter(User.id == oauth_token.user_id, User.is_active.is_(True)).first()
+            if user is None:
+                raise credentials_exception
+            return user
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
@@ -131,12 +395,12 @@ async def get_current_user(
     return user
 
 async def get_optional_current_user(
-    db: Session = Depends(get_db), token: Optional[str] = Depends(oauth2_scheme)
+    request: Request, db: Session = Depends(get_db), token: Optional[str] = Depends(oauth2_scheme)
 ) -> Optional[User]:
     if not token:
         return None
     try:
-        return await get_current_user(db=db, token=token)
+        return await get_current_user(request=request, db=db, token=token)
     except HTTPException:
         return None
 
@@ -327,14 +591,24 @@ async def delete_agent(
 
 @app.get("/agents", response_model=List[AgentResponse])
 async def list_agents(
+    response: Response,
     query: str = Query(default="", max_length=120),
     category: str = Query(default="", max_length=80),
-    sort: str = Query(default="relevance", pattern="^(relevance|rating|success_rate|price)$"),
+    sort: str = Query(default="relevance", pattern="^(relevance|rating|success_rate|price|price_asc|price_desc)$"),
+    max_price: float = Query(default=None, ge=0, le=100000),
+    minimum_rating: float = Query(default=None, ge=0, le=5),
+    minimum_success_rate: float = Query(default=None, ge=0, le=100),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
-    """List all available agents"""
-    agents = discover_agents(db, query=query, category=category, sort=sort)
+    """Search active services with real reputation filters and offset pagination."""
+    agents = discover_agents(db, query=query, category=category, sort=sort,
+                             max_price=max_price, minimum_rating=minimum_rating,
+                             minimum_success_rate=minimum_success_rate)
+    response.headers["X-Total-Count"] = str(len(agents))
+    response.headers["X-Results-Complete"] = str(offset + limit >= len(agents)).lower()
     
     # Get all purchased agents for the current user
     purchased_agent_ids = {
@@ -360,8 +634,15 @@ async def list_agents(
             success_rate=agent.success_rate,
             completed_invocations=agent.completed_invocations,
         )
-        for agent in agents
+        for agent in agents[offset:offset + limit]
     ]
+
+
+@app.get("/marketplace/categories")
+async def list_agent_categories(db: Session = Depends(get_db)):
+    """Return categories that currently have active listings."""
+    values = db.query(Agent.category).filter(Agent.is_active.is_(True)).distinct().all()
+    return sorted({value[0].strip() for value in values if value[0] and value[0].strip()}, key=str.casefold)
 
 @app.get("/users/me/agents", response_model=List[AgentResponse])
 async def list_my_agents(
@@ -659,11 +940,11 @@ async def invoke_agent(
                 if demo_mode:
                     db.execute(update(User).where(User.id == current_user.id).values(token_balance=User.token_balance + charge))
                     reserved_transaction.status = "released"
-                    reserved_transaction.settled_at = datetime.utcnow()
+                    reserved_transaction.settled_at = _utcnow()
                 else:
                     db.execute(update(User).where(User.id == agent.developer_id).values(token_balance=User.token_balance + charge))
                     reserved_transaction.status = "settled"
-                    reserved_transaction.settled_at = datetime.utcnow()
+                    reserved_transaction.settled_at = _utcnow()
         else:
             db_invocation = AgentInvocation(
                 user_id=current_user.id, agent_id=agent_id,
@@ -709,7 +990,7 @@ async def invoke_agent(
         if reserved_transaction:
             db.execute(update(User).where(User.id == current_user.id).values(token_balance=User.token_balance + charge))
             reserved_transaction.status = "released"
-            reserved_transaction.settled_at = datetime.utcnow()
+            reserved_transaction.settled_at = _utcnow()
         db.commit()
         raise HTTPException(
             status_code=502,

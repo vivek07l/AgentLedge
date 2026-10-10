@@ -20,7 +20,7 @@ import {
   DialogContent,
   DialogActions,
 } from '@mui/material';
-import { Edit, Delete, Key } from '@mui/icons-material';
+import { Delete, Key } from '@mui/icons-material';
 import { useAuth } from '../store/AuthContext';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';

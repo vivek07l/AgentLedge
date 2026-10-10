@@ -36,35 +36,50 @@ def seed_database():
             {
                 'name': 'Interview Prep Assistant',
                 'description': 'AI-powered interview preparation assistant that helps you practice for job interviews with personalized questions and feedback.',
+                'category': 'Career',
+                'capabilities': 'interview questions, behavioral prep, technical questions, mock feedback',
                 'price': 10.0,
+                'minimum_price': 8.0,
                 'developer_id': developer_id,
                 'is_active': True
             },
             {
                 'name': 'Code Reviewer',
                 'description': 'Automated code review assistant that analyzes your code for best practices, potential bugs, and suggests improvements.',
+                'category': 'Development',
+                'capabilities': 'code analysis, bug detection, security checks, style suggestions, refactoring',
                 'price': 15.0,
+                'minimum_price': 10.0,
                 'developer_id': developer_id,
                 'is_active': True
             },
             {
                 'name': 'Resume Reviewer',
                 'description': 'Professional resume analysis tool that provides detailed feedback and suggestions to improve your resume.',
+                'category': 'Career',
+                'capabilities': 'resume analysis, ATS formatting, bullet improvements, cover letters',
                 'price': 10.0,
+                'minimum_price': 7.0,
                 'developer_id': developer_id,
                 'is_active': True
             },
             {
                 'name': 'Technical Troubleshooter',
                 'description': 'AI assistant that helps diagnose and solve technical problems with step-by-step guidance.',
+                'category': 'Operations',
+                'capabilities': 'root cause diagnosis, log analysis, system debugging, stack trace resolution',
                 'price': 12.0,
+                'minimum_price': 9.0,
                 'developer_id': developer_id,
                 'is_active': True
             },
             {
                 'name': 'Writing Assistant',
                 'description': 'Advanced writing aid that helps improve your content with suggestions for clarity, tone, and style.',
+                'category': 'Content',
+                'capabilities': 'copywriting, tone adjustment, proofreading, grammar, style improvement',
                 'price': 8.0,
+                'minimum_price': 5.0,
                 'developer_id': developer_id,
                 'is_active': True
             }

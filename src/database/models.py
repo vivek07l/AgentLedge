@@ -25,6 +25,50 @@ class User(Base):
     negotiations_as_buyer = relationship("Negotiation", back_populates="buyer", foreign_keys="Negotiation.buyer_id")
     negotiations_as_provider = relationship("Negotiation", back_populates="provider", foreign_keys="Negotiation.provider_id")
     token_transactions = relationship("TokenTransaction", back_populates="user", foreign_keys="TokenTransaction.user_id")
+    oauth_authorizations = relationship("OAuthAuthorizationCode", back_populates="user", cascade="all, delete-orphan")
+    oauth_tokens = relationship("OAuthAccessToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class OAuthClient(Base):
+    """OAuth clients created through dynamic client registration."""
+    __tablename__ = "oauth_clients"
+
+    client_id = Column(String, primary_key=True)
+    redirect_uris_json = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class OAuthAuthorizationCode(Base):
+    """Single-use, hashed authorization codes bound to PKCE and one user."""
+    __tablename__ = "oauth_authorization_codes"
+
+    code_hash = Column(String, primary_key=True)
+    client_id = Column(String, ForeignKey("oauth_clients.client_id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    redirect_uri = Column(String, nullable=False)
+    code_challenge = Column(String, nullable=False)
+    code_challenge_method = Column(String, nullable=False, default="S256")
+    audience = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="oauth_authorizations")
+
+
+class OAuthAccessToken(Base):
+    """Hashed opaque OAuth bearer tokens with server-side expiry/revocation."""
+    __tablename__ = "oauth_access_tokens"
+
+    token_hash = Column(String, primary_key=True)
+    client_id = Column(String, ForeignKey("oauth_clients.client_id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    scopes = Column(String, nullable=False)
+    audience = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="oauth_tokens")
 
 class Agent(Base):
     __tablename__ = "agents"

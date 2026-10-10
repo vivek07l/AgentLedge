@@ -40,3 +40,16 @@ def upgrade_legacy_schema(engine: Engine) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_invocations_idempotency_key "
                 "ON agent_invocations (idempotency_key)"
             ))
+        if "agents" in tables:
+            defaults = [
+                ("Interview Prep Assistant", "Career", "interview questions, behavioral prep, technical questions, mock feedback"),
+                ("Code Reviewer", "Development", "code analysis, bug detection, security checks, style suggestions, refactoring"),
+                ("Resume Reviewer", "Career", "resume analysis, ATS formatting, bullet improvements, cover letters"),
+                ("Technical Troubleshooter", "Operations", "root cause diagnosis, log analysis, system debugging, stack trace resolution"),
+                ("Writing Assistant", "Content", "copywriting, tone adjustment, proofreading, grammar, style improvement"),
+            ]
+            for name, cat, caps in defaults:
+                connection.execute(text(
+                    f"UPDATE agents SET category = :cat, capabilities = :caps "
+                    f"WHERE name = :name AND (category IS NULL OR category = 'General' OR category = '' OR capabilities IS NULL OR capabilities = '')"
+                ), {"name": name, "cat": cat, "caps": caps})

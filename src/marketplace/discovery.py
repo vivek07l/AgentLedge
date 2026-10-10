@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 from src.database.models import Agent, AgentInvocation, AgentReview
 
 
-def discover_agents(db: Session, query: str = "", category: str = "", sort: str = "relevance"):
+def discover_agents(
+    db: Session, query: str = "", category: str = "", sort: str = "relevance",
+    max_price: float | None = None, minimum_rating: float | None = None,
+    minimum_success_rate: float | None = None,
+):
     agents_query = db.query(Agent).filter(Agent.is_active.is_(True))
     if query:
         term = f"%{query.strip()}%"
@@ -14,6 +18,8 @@ def discover_agents(db: Session, query: str = "", category: str = "", sort: str 
         )
     if category:
         agents_query = agents_query.filter(Agent.category.ilike(category.strip()))
+    if max_price is not None:
+        agents_query = agents_query.filter(Agent.price <= max_price)
 
     agents = agents_query.all()
     stats = {}
@@ -38,12 +44,32 @@ def discover_agents(db: Session, query: str = "", category: str = "", sort: str 
         agent.completed_invocations = completed
         agent.success_rate = round((succeeded / completed) * 100, 1) if completed else None
 
-    if sort == "rating":
-        agents.sort(key=lambda a: (a.average_rating or 0, a.review_count), reverse=True)
+    if minimum_rating is not None:
+        agents = [a for a in agents if a.average_rating is not None and a.average_rating >= minimum_rating]
+    if minimum_success_rate is not None:
+        agents = [a for a in agents if a.success_rate is not None and a.success_rate >= minimum_success_rate]
+
+    if sort == "relevance":
+        if query.strip():
+            terms = [term.casefold() for term in query.split() if term]
+            def relevance(agent):
+                fields = (agent.name or "", agent.category or "", agent.description or "", agent.capabilities or "")
+                normalized = tuple(field.casefold() for field in fields)
+                return (sum(4 if term in normalized[0] else 0 for term in terms)
+                        + sum(2 if term in normalized[1] else 0 for term in terms)
+                        + sum(1 if any(term in value for value in normalized[2:]) else 0 for term in terms),
+                        agent.average_rating or 0, agent.review_count, agent.id)
+            agents.sort(key=relevance, reverse=True)
+        else:
+            agents.sort(key=lambda a: (a.average_rating or 0, a.review_count, a.id), reverse=True)
+    elif sort == "rating":
+        agents.sort(key=lambda a: (a.average_rating or 0, a.review_count, a.id), reverse=True)
     elif sort == "success_rate":
-        agents.sort(key=lambda a: (a.success_rate or 0, a.completed_invocations), reverse=True)
-    elif sort == "price":
-        agents.sort(key=lambda a: a.price or 0)
+        agents.sort(key=lambda a: (a.success_rate or 0, a.completed_invocations, a.id), reverse=True)
+    elif sort in ("price", "price_asc"):
+        agents.sort(key=lambda a: (a.price if a.price is not None else 0, a.id))
+    elif sort == "price_desc":
+        agents.sort(key=lambda a: (a.price if a.price is not None else 0, a.id), reverse=True)
     return agents
 
 

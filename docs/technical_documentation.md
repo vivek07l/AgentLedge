@@ -104,7 +104,7 @@ Each agent provides:
 
 ### Marketplace Overview
 ![Marketplace](/screenshots_bot/screenshots/04_marketplace_overview_20250216_003320.png)
-*AgentLedge marketplace displaying available services*
+*AgentsLedge marketplace displaying available services*
 
 ### User Profile
 ![Profile](/screenshots_bot/screenshots/07_profile_page_20250216_003336.png)
