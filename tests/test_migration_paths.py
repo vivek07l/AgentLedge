@@ -67,6 +67,10 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
         ))
         connection.execute(text("ALTER TABLE oauth_authorization_codes DROP COLUMN scopes"))
         connection.execute(text("ALTER TABLE agents DROP COLUMN implementation_key"))
+        connection.execute(text("ALTER TABLE agents DROP COLUMN execution_instructions"))
+        connection.execute(text("ALTER TABLE agents DROP COLUMN expected_input"))
+        connection.execute(text("ALTER TABLE agents DROP COLUMN input_schema_json"))
+        connection.execute(text("ALTER TABLE agents DROP COLUMN output_format"))
         connection.execute(text("DROP TABLE oauth_action_approvals"))
         connection.execute(text("ALTER TABLE agent_purchases DROP COLUMN tokens_remaining"))
     engine.dispose()
@@ -85,7 +89,7 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
     with engine.connect() as connection:
         # The adopted baseline is downstream of migration 418451761ac7, so
         # its missing purchase column must be added before the baseline stamp.
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "4e6f2a9c1b70"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "72dc3f911a2e"
     assert {"oauth_action_approvals", "negotiations", "negotiation_offers", "token_transactions"} <= set(inspector.get_table_names())
     for table_name, table in Base.metadata.tables.items():
         assert table_name in inspector.get_table_names()

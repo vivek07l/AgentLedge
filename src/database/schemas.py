@@ -59,6 +59,11 @@ class AgentResponse(AgentBase):
     is_active: bool
     is_purchased: bool = False
     execution_available: bool = False
+    implementation_key: Optional[str] = None
+    execution_instructions: Optional[str] = None
+    expected_input: Optional[str] = None
+    input_schema_json: Optional[str] = None
+    output_format: Optional[str] = None
     average_rating: Optional[float] = None
     review_count: int = 0
     success_rate: Optional[float] = None

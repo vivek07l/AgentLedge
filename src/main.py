@@ -53,6 +53,7 @@ from src.agents.interview_prep import InterviewPrepAgent
 from src.agents.writing_assistant import WritingAssistantAgent
 from src.agents.technical_troubleshooter import TechnicalTroubleshooterAgent
 from src.agents.gemini_text_summarizer import GeminiTextSummarizerAgent
+from src.agents.gemini_marketplace import GeminiMarketplaceAgent
 
 from pydantic import BaseModel, Field
 from src.agents.demo_responses import make_demo_response
@@ -411,7 +412,37 @@ def _agent_execution_available(agent: Agent) -> bool:
     key = _agent_implementation(agent)
     if key == "gemini_text_summarizer":
         return _gemini_summarizer_is_configured()
+    if key == "gemini_marketplace_service":
+        return _gemini_summarizer_is_configured() and _gemini_listing_config_valid(agent)
     return key is not None
+
+
+def _gemini_listing_config_valid(agent: Agent) -> bool:
+    instructions = (agent.execution_instructions or "").strip()
+    expected_input = (agent.expected_input or "").strip()
+    output_format = (agent.output_format or "").strip()
+    if not instructions or len(instructions) > 8000 or not expected_input or len(expected_input) > 2000:
+        return False
+    if not output_format or len(output_format) > 1000:
+        return False
+    if agent.input_schema_json:
+        try:
+            schema = json.loads(agent.input_schema_json)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(schema, dict) or schema.get("type", "object") != "object":
+            return False
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        supported_types = {"string", "number", "integer", "boolean", "object", "array"}
+        if (not isinstance(properties, dict) or not isinstance(required, list)
+                or any(not isinstance(key, str) or key not in properties for key in required)):
+            return False
+        if any(not isinstance(definition, dict)
+               or definition.get("type", "string") not in supported_types
+               for definition in properties.values()):
+            return False
+    return True
 
 @app.get("/system/status")
 async def system_status():
@@ -707,6 +738,21 @@ class AgentAdminUpdate(BaseModel):
     description: Optional[str] = Field(default=None, min_length=1, max_length=5000)
     category: Optional[str] = Field(default=None, min_length=1, max_length=80)
     capabilities: Optional[str] = Field(default=None, max_length=1000)
+    price: Optional[float] = Field(default=None, ge=0)
+    minimum_price: Optional[float] = Field(default=None, ge=0)
+    execution_instructions: Optional[str] = Field(default=None, max_length=8000)
+    expected_input: Optional[str] = Field(default=None, max_length=2000)
+    input_schema_json: Optional[str] = Field(default=None, max_length=8000)
+    output_format: Optional[str] = Field(default=None, max_length=1000)
+
+
+class AdminAgentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=5000)
+    category: str = Field(default="General", min_length=1, max_length=80)
+    capabilities: str = Field(default="", max_length=1000)
+    price: float = Field(ge=0)
+    minimum_price: Optional[float] = Field(default=None, ge=0)
 
 async def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
@@ -801,10 +847,40 @@ async def admin_list_agents(
 ):
     return [{
         "id": agent.id, "name": agent.name, "category": agent.category,
+        "description": agent.description, "capabilities": agent.capabilities,
+        "price": agent.price, "minimum_price": agent.minimum_price,
         "developer_id": agent.developer_id, "is_active": agent.is_active,
         "implementation_key": agent.implementation_key,
+        "execution_instructions": agent.execution_instructions,
+        "expected_input": agent.expected_input,
+        "input_schema_json": agent.input_schema_json,
+        "output_format": agent.output_format,
         "execution_available": _agent_execution_available(agent),
+        "gemini_execution_enabled": agent.implementation_key in {"gemini_text_summarizer", "gemini_marketplace_service"}
+            and _agent_execution_available(agent),
     } for agent in db.query(Agent).order_by(Agent.created_at.desc()).all()]
+
+
+@app.post("/admin/agents")
+async def admin_create_agent(
+    payload: AdminAgentCreate, admin: User = Depends(get_admin_user), db: Session = Depends(get_db),
+):
+    if payload.minimum_price is not None and payload.minimum_price > payload.price:
+        raise HTTPException(status_code=422, detail="Minimum acceptable price cannot exceed the listed price")
+    agent = Agent(
+        name=payload.name.strip(), description=payload.description.strip(),
+        category=payload.category.strip(), capabilities=payload.capabilities.strip(),
+        price=payload.price, minimum_price=payload.minimum_price,
+        developer_id=admin.id, is_active=True, implementation_key=None,
+    )
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    return {"id": agent.id, "name": agent.name, "category": agent.category,
+            "developer_id": agent.developer_id, "is_active": agent.is_active,
+            "implementation_key": None, "execution_instructions": None,
+            "expected_input": None, "input_schema_json": None, "output_format": None,
+            "execution_available": False, "gemini_execution_enabled": False}
 
 @app.patch("/admin/agents/{agent_id}")
 async def admin_update_agent(
@@ -817,16 +893,29 @@ async def admin_update_agent(
     fields = update.model_fields_set
     if not fields:
         raise HTTPException(status_code=422, detail="Provide at least one listing field to update")
-    if "implementation_key" in fields and update.implementation_key not in (None, "gemini_text_summarizer"):
-        raise HTTPException(status_code=422, detail="Only the supported Gemini text summarizer can be assigned here")
-    for field in ("is_active", "implementation_key", "name", "description", "category", "capabilities"):
+    if "implementation_key" in fields and update.implementation_key not in (None, "gemini_text_summarizer", "gemini_marketplace_service"):
+        raise HTTPException(status_code=422, detail="Only supported Gemini implementations can be assigned here")
+    for field in ("is_active", "implementation_key", "name", "description", "category", "capabilities", "price", "minimum_price",
+                  "execution_instructions", "expected_input", "input_schema_json", "output_format"):
         if field in fields:
             setattr(agent, field, getattr(update, field))
+    if agent.minimum_price is not None and agent.price is not None and agent.minimum_price > agent.price:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Minimum acceptable price cannot exceed the listed price")
+    if agent.implementation_key == "gemini_marketplace_service" and not _gemini_listing_config_valid(agent):
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Gemini execution requires valid instructions, expected input, output format, and an optional JSON object schema")
     db.commit()
     return {
         "id": agent.id, "name": agent.name, "is_active": agent.is_active,
         "implementation_key": agent.implementation_key,
+        "execution_instructions": agent.execution_instructions,
+        "expected_input": agent.expected_input,
+        "input_schema_json": agent.input_schema_json,
+        "output_format": agent.output_format,
         "execution_available": _agent_execution_available(agent),
+        "gemini_execution_enabled": agent.implementation_key in {"gemini_text_summarizer", "gemini_marketplace_service"}
+            and _agent_execution_available(agent),
     }
 
 @app.post("/agents/create", response_model=AgentResponse)
@@ -1074,6 +1163,7 @@ async def call_builtin_agent(agent_key: str, agent_instance: Any, input_data: di
         "writing_assistant": "writing_assistant",
         "technical_troubleshooter": "technical_troubleshooting",
         "gemini_text_summarizer": "gemini_text_summarizer",
+        "gemini_marketplace_service": "gemini_marketplace_service",
     }[agent_key]
     payload = input_data.get(payload_key) or input_data
     generic_text = input_data.get("input_text", "")
@@ -1098,6 +1188,14 @@ async def call_builtin_agent(agent_key: str, agent_instance: Any, input_data: di
         )
     if agent_key == "gemini_text_summarizer":
         return await agent_instance.process_request(input_text=payload.get("input_text", generic_text))
+    if agent_key == "gemini_marketplace_service":
+        return await agent_instance.process_request(
+            instructions=payload["_service_instructions"],
+            expected_input=payload["_expected_input"],
+            input_schema=payload["_input_schema"],
+            output_format=payload["_output_format"],
+            input_data=payload["_user_input"],
+        )
     return await agent_instance.process_request({
         **payload,
         "issue": payload.get("issue", payload.get("problem", generic_text)),
@@ -1128,6 +1226,11 @@ async def invoke_agent(
     agent_instance = AVAILABLE_AGENTS.get(agent_key)
     if not agent_instance:
         raise HTTPException(status_code=409, detail="This listing's supported implementation is unavailable. No tokens were charged.")
+    if agent_key == "gemini_marketplace_service":
+        if not _gemini_listing_config_valid(agent):
+            raise HTTPException(status_code=409, detail="Gemini execution is disabled or its listing configuration is invalid. No tokens were charged.")
+        if not _gemini_summarizer_is_configured():
+            raise HTTPException(status_code=503, detail="Gemini is not configured for live execution. No tokens were charged.")
 
     # Paid marketplace use is authorized by a persisted agreement. The agreed
     # backend price, never a client-supplied amount, governs settlement.
@@ -1138,6 +1241,7 @@ async def invoke_agent(
     if not request_key:
         raise HTTPException(status_code=422, detail="Idempotency-Key cannot be empty")
     persisted_input = json.dumps(input_data, sort_keys=True, separators=(",", ":"))
+    execution_data = input_data
     if len(request_key) > 255:
         raise HTTPException(status_code=422, detail="Idempotency-Key must be at most 255 characters")
     if agent_key == "gemini_text_summarizer":
@@ -1146,6 +1250,39 @@ async def invoke_agent(
             raise HTTPException(status_code=422, detail="input_text must contain non-whitespace text")
         if len(summary_text) > 20000:
             raise HTTPException(status_code=422, detail="input_text must be at most 20000 characters")
+    elif agent_key == "gemini_marketplace_service":
+        if not input_data or not isinstance(input_data, dict):
+            raise HTTPException(status_code=422, detail="Provide a non-empty JSON object as service input")
+        if len(persisted_input) > 30000:
+            raise HTTPException(status_code=422, detail="Service input must be at most 30000 characters")
+        config_data = input_data
+        if agent.input_schema_json:
+            schema = json.loads(agent.input_schema_json)
+            required = schema.get("required", [])
+            if not isinstance(required, list) or any(key not in config_data for key in required):
+                raise HTTPException(status_code=422, detail="Input is missing fields required by this service")
+            properties = schema.get("properties", {})
+            type_checks = {
+                "string": lambda value: isinstance(value, str),
+                "number": lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+                "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+                "boolean": lambda value: isinstance(value, bool),
+                "object": lambda value: isinstance(value, dict),
+                "array": lambda value: isinstance(value, list),
+            }
+            for key, value in config_data.items():
+                definition = properties.get(key)
+                if definition is None and schema.get("additionalProperties") is False:
+                    raise HTTPException(status_code=422, detail=f"Input contains unsupported field: {key}")
+                if definition is not None and not type_checks[definition.get("type", "string")](value):
+                    raise HTTPException(status_code=422, detail=f"Input field '{key}' has the wrong type")
+        execution_data = {
+            "_service_instructions": agent.execution_instructions,
+            "_expected_input": agent.expected_input,
+            "_input_schema": json.loads(agent.input_schema_json) if agent.input_schema_json else None,
+            "_output_format": agent.output_format,
+            "_user_input": config_data,
+        }
     existing = db.query(AgentInvocation).filter(
         AgentInvocation.user_id == current_user.id,
         AgentInvocation.idempotency_key == request_key,
@@ -1238,7 +1375,7 @@ async def invoke_agent(
         if demo_mode:
             result = make_demo_response(agent_key, input_data)
         else:
-            result = await call_builtin_agent(agent_key, agent_instance, input_data)
+            result = await call_builtin_agent(agent_key, agent_instance, execution_data)
         if result.get("status") == "error" or result.get("error"):
             raise RuntimeError("Agent returned an unsuccessful result")
 
@@ -1618,6 +1755,7 @@ AVAILABLE_AGENTS = {
     "writing_assistant": WritingAssistantAgent(),
     "technical_troubleshooter": TechnicalTroubleshooterAgent(),
     "gemini_text_summarizer": GeminiTextSummarizerAgent(),
+    "gemini_marketplace_service": GeminiMarketplaceAgent(),
 }
 
 # Map agent display names to implementation keys
