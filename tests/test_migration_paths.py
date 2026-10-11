@@ -82,6 +82,10 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     inspector = inspect(engine)
     assert "4e6f2a9c1b70" in adopted.stderr
+    with engine.connect() as connection:
+        # The adopted baseline is downstream of migration 418451761ac7, so
+        # its missing purchase column must be added before the baseline stamp.
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "4e6f2a9c1b70"
     assert {"oauth_action_approvals", "negotiations", "negotiation_offers", "token_transactions"} <= set(inspector.get_table_names())
     for table_name, table in Base.metadata.tables.items():
         assert table_name in inspector.get_table_names()
@@ -92,6 +96,42 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
         )).one()
         assert purchase == (7, 12.5, 0.0)
         assert connection.execute(text("SELECT token_balance FROM users WHERE id = 1")).scalar_one() == 45
+    engine.dispose()
+
+
+def test_existing_tokens_remaining_column_is_not_added_twice(tmp_path):
+    db_path = tmp_path / "partially_migrated.sqlite3"
+    initial = _alembic(db_path, "upgrade", "017a5cc7a6d2")
+    assert initial.returncode == 0, initial.stdout + initial.stderr
+
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE agent_purchases ADD COLUMN tokens_remaining FLOAT NOT NULL DEFAULT 0.0"
+        ))
+        connection.execute(text(
+            "INSERT INTO users (id, token_balance) VALUES (1, 20)"
+        ))
+        connection.execute(text(
+            "INSERT INTO agents (id, name, price_per_token) VALUES (1, 'Service', 2)"
+        ))
+        connection.execute(text(
+            "INSERT INTO agent_purchases (id, user_id, agent_id, tokens_purchased, purchase_date, tokens_remaining) "
+            "VALUES (11, 1, 1, 8, CURRENT_TIMESTAMP, 6)"
+        ))
+    engine.dispose()
+
+    upgraded = _alembic(db_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    inspector = inspect(engine)
+    assert "tokens_remaining" in {
+        column["name"] for column in inspector.get_columns("agent_purchases")
+    }
+    with engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT purchase_price, tokens_remaining FROM agent_purchases WHERE id = 11"
+        )).one() == (8.0, 6.0)
     engine.dispose()
 
 
