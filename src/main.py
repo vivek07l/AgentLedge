@@ -52,6 +52,7 @@ from src.agents.code_reviewer import CodeReviewAgent
 from src.agents.interview_prep import InterviewPrepAgent
 from src.agents.writing_assistant import WritingAssistantAgent
 from src.agents.technical_troubleshooter import TechnicalTroubleshooterAgent
+from src.agents.gemini_text_summarizer import GeminiTextSummarizerAgent
 
 from pydantic import BaseModel, Field
 from src.agents.demo_responses import make_demo_response
@@ -381,19 +382,51 @@ class ProviderCounterRequest(BaseModel):
     amount: float = Field(gt=0, le=100000)
 
 def has_live_ai_key() -> bool:
-    return settings.AI_MODE.strip().lower() == "live" and has_provider_credentials()
+    return (
+        settings.AI_MODE.strip().lower() == "live"
+        and has_provider_credentials()
+        and bool(selected_model().strip())
+    )
 
 
 def live_provider_is_misconfigured() -> bool:
-    return settings.AI_MODE.strip().lower() == "live" and not has_provider_credentials()
+    return settings.AI_MODE.strip().lower() == "live" and (
+        not has_provider_credentials() or not selected_model().strip()
+    )
+
+
+def _gemini_summarizer_is_configured() -> bool:
+    try:
+        return (
+            settings.AI_MODE.strip().lower() == "live"
+            and selected_provider() == "gemini"
+            and has_provider_credentials()
+            and bool(selected_model().strip())
+        )
+    except ValueError:
+        return False
+
+
+def _agent_execution_available(agent: Agent) -> bool:
+    key = _agent_implementation(agent)
+    if key == "gemini_text_summarizer":
+        return _gemini_summarizer_is_configured()
+    return key is not None
 
 @app.get("/system/status")
 async def system_status():
+    if settings.AI_MODE.strip().lower() == "live" and not has_provider_credentials():
+        message = "AI_MODE=live but the selected provider API key is not configured."
+    elif settings.AI_MODE.strip().lower() == "live" and not selected_model().strip():
+        message = "AI_MODE=live requires AI_MODEL to name a model supported by the selected provider."
+    else:
+        message = None
     return {
         "ai_mode": "error" if live_provider_is_misconfigured() else "live" if has_live_ai_key() else "demo",
         "provider": selected_provider(),
         "model": selected_model(),
-        "message": "AI_MODE is live but the selected provider API key is missing." if live_provider_is_misconfigured() else None,
+        "message": message,
+        "gemini_summarizer_available": _gemini_summarizer_is_configured(),
     }
 
 @app.post("/simulation/run")
@@ -668,7 +701,12 @@ class UserAdminUpdate(BaseModel):
     is_developer: Optional[bool] = None
 
 class AgentAdminUpdate(BaseModel):
-    is_active: bool
+    is_active: Optional[bool] = None
+    implementation_key: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, min_length=1, max_length=5000)
+    category: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    capabilities: Optional[str] = Field(default=None, max_length=1000)
 
 async def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
@@ -764,6 +802,8 @@ async def admin_list_agents(
     return [{
         "id": agent.id, "name": agent.name, "category": agent.category,
         "developer_id": agent.developer_id, "is_active": agent.is_active,
+        "implementation_key": agent.implementation_key,
+        "execution_available": _agent_execution_available(agent),
     } for agent in db.query(Agent).order_by(Agent.created_at.desc()).all()]
 
 @app.patch("/admin/agents/{agent_id}")
@@ -774,9 +814,20 @@ async def admin_update_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    agent.is_active = update.is_active
+    fields = update.model_fields_set
+    if not fields:
+        raise HTTPException(status_code=422, detail="Provide at least one listing field to update")
+    if "implementation_key" in fields and update.implementation_key not in (None, "gemini_text_summarizer"):
+        raise HTTPException(status_code=422, detail="Only the supported Gemini text summarizer can be assigned here")
+    for field in ("is_active", "implementation_key", "name", "description", "category", "capabilities"):
+        if field in fields:
+            setattr(agent, field, getattr(update, field))
     db.commit()
-    return {"id": agent.id, "is_active": agent.is_active}
+    return {
+        "id": agent.id, "name": agent.name, "is_active": agent.is_active,
+        "implementation_key": agent.implementation_key,
+        "execution_available": _agent_execution_available(agent),
+    }
 
 @app.post("/agents/create", response_model=AgentResponse)
 async def create_agent(
@@ -805,7 +856,7 @@ async def create_agent(
     db.add(db_agent)
     db.commit()
     db.refresh(db_agent)
-    return AgentResponse.model_validate(db_agent).model_copy(update={"execution_available": _agent_implementation(db_agent) is not None})
+    return AgentResponse.model_validate(db_agent).model_copy(update={"execution_available": _agent_execution_available(db_agent)})
 
 @app.put("/agents/{agent_id}", response_model=AgentResponse)
 async def update_agent(
@@ -821,7 +872,7 @@ async def update_agent(
         raise HTTPException(status_code=422, detail="Minimum acceptable price must be between zero and the listed price")
     db.commit()
     db.refresh(agent)
-    return AgentResponse.model_validate(agent).model_copy(update={"execution_available": _agent_implementation(agent) is not None})
+    return AgentResponse.model_validate(agent).model_copy(update={"execution_available": _agent_execution_available(agent)})
 
 @app.delete("/agents/{agent_id}", status_code=204)
 async def delete_agent(
@@ -870,7 +921,7 @@ async def list_agents(
             developer_id=agent.developer_id,
             is_active=agent.is_active,
             is_purchased=agent.id in purchased_agent_ids,
-            execution_available=_agent_implementation(agent) is not None,
+            execution_available=_agent_execution_available(agent),
             created_at=agent.created_at,
             category=agent.category,
             capabilities=agent.capabilities,
@@ -897,7 +948,7 @@ async def list_my_agents(
     agents = db.query(Agent).filter(Agent.developer_id == current_user.id).order_by(Agent.created_at.desc()).all()
     return [AgentResponse.model_validate(agent).model_copy(update={
         "minimum_price": floor_for(agent), **(reputation_for_agent(db, agent.id) or {}),
-            "execution_available": _agent_implementation(agent) is not None,
+            "execution_available": _agent_execution_available(agent),
     }) for agent in agents]
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -927,7 +978,7 @@ async def get_agent(
         developer_id=agent.developer_id,
         is_active=agent.is_active,
         is_purchased=purchase is not None,
-        execution_available=_agent_implementation(agent) is not None,
+        execution_available=_agent_execution_available(agent),
         created_at=agent.created_at,
         category=agent.category,
         capabilities=agent.capabilities,
@@ -1022,6 +1073,7 @@ async def call_builtin_agent(agent_key: str, agent_instance: Any, input_data: di
         "interview_prep": "interview_prep",
         "writing_assistant": "writing_assistant",
         "technical_troubleshooter": "technical_troubleshooting",
+        "gemini_text_summarizer": "gemini_text_summarizer",
     }[agent_key]
     payload = input_data.get(payload_key) or input_data
     generic_text = input_data.get("input_text", "")
@@ -1044,6 +1096,8 @@ async def call_builtin_agent(agent_key: str, agent_instance: Any, input_data: di
             text=payload.get("text", generic_text),
             style=payload.get("style"), context=payload.get("context"),
         )
+    if agent_key == "gemini_text_summarizer":
+        return await agent_instance.process_request(input_text=payload.get("input_text", generic_text))
     return await agent_instance.process_request({
         **payload,
         "issue": payload.get("issue", payload.get("problem", generic_text)),
@@ -1063,6 +1117,11 @@ async def invoke_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.implementation_key == "gemini_text_summarizer" and not _gemini_summarizer_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini summarization is not configured for live execution. Set AI_PROVIDER=gemini, AI_MODE=live, GEMINI_API_KEY, and a supported AI_MODEL. No tokens were charged.",
+        )
     agent_key = _agent_implementation(agent)
     if not agent_key:
         raise HTTPException(status_code=409, detail="This listing is discoverable but has no executable implementation. No tokens were charged.")
@@ -1081,6 +1140,12 @@ async def invoke_agent(
     persisted_input = json.dumps(input_data, sort_keys=True, separators=(",", ":"))
     if len(request_key) > 255:
         raise HTTPException(status_code=422, detail="Idempotency-Key must be at most 255 characters")
+    if agent_key == "gemini_text_summarizer":
+        summary_text = input_data.get("input_text")
+        if not isinstance(summary_text, str) or not summary_text.strip():
+            raise HTTPException(status_code=422, detail="input_text must contain non-whitespace text")
+        if len(summary_text) > 20000:
+            raise HTTPException(status_code=422, detail="input_text must be at most 20000 characters")
     existing = db.query(AgentInvocation).filter(
         AgentInvocation.user_id == current_user.id,
         AgentInvocation.idempotency_key == request_key,
@@ -1551,7 +1616,8 @@ AVAILABLE_AGENTS = {
     "code_reviewer": CodeReviewAgent(),
     "interview_prep": InterviewPrepAgent(),
     "writing_assistant": WritingAssistantAgent(),
-    "technical_troubleshooter": TechnicalTroubleshooterAgent()
+    "technical_troubleshooter": TechnicalTroubleshooterAgent(),
+    "gemini_text_summarizer": GeminiTextSummarizerAgent(),
 }
 
 # Map agent display names to implementation keys

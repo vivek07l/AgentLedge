@@ -38,7 +38,7 @@ The adapter needs:
 | `AGENTMESH_MCP_TRANSPORT` | `stdio` | Use `streamable-http` only behind HTTPS for remote access. |
 | `AGENTMESH_MCP_PORT` | `8011` | Local MCP HTTP port when using Streamable HTTP. |
 
-Gemini runs in the backend through its existing OpenAI-compatible endpoint, not in the adapter. Set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, a Gemini-supported `AI_MODEL`, and `AI_MODE=live`. Never put the key in frontend or adapter configuration. A configured key alone leaves the application in demo mode. Set `AI_MODEL` explicitly for Gemini; when blank the provider helper falls back to `OPENAI_MODEL`.
+Gemini runs in the backend through Google's documented OpenAI-compatible endpoint, not in the adapter. Set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, a Gemini-supported `AI_MODEL`, and `AI_MODE=live`. Never put the key in frontend or adapter configuration. A configured key alone leaves the application in demo mode. Set `AI_MODEL` explicitly for Gemini; the backend does not fall back to the OpenAI model name. The `gemini_text_summarizer` implementation is limited to the listing explicitly bound to it by an administrator and is only reported executable when these live settings are present.
 
 Use the backend `.env.example` and adapter `.env.example` as templates. Never commit `.env` files, passwords, access tokens, or generated secrets.
 

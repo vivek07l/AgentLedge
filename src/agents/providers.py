@@ -29,14 +29,20 @@ def has_provider_credentials() -> bool:
     }
 
 
-def create_model_client() -> AsyncOpenAI:
+def create_model_client(timeout_seconds: float = 30.0) -> AsyncOpenAI:
     provider = selected_provider()
     key = selected_api_key()
     if provider == "gemini":
-        return AsyncOpenAI(api_key=key or "demo-mode-no-key", base_url=GEMINI_OPENAI_COMPATIBLE_BASE_URL)
-    return AsyncOpenAI(api_key=key or "demo-mode-no-key")
+        return AsyncOpenAI(
+            api_key=key or "demo-mode-no-key", base_url=GEMINI_OPENAI_COMPATIBLE_BASE_URL,
+            timeout=timeout_seconds, max_retries=0,
+        )
+    return AsyncOpenAI(api_key=key or "demo-mode-no-key", timeout=timeout_seconds, max_retries=0)
 
 
 def selected_model() -> str:
     settings = get_settings()
+    if selected_provider() == "gemini":
+        # Never silently send an OpenAI model ID to Gemini.
+        return settings.AI_MODEL.strip()
     return settings.AI_MODEL.strip() or settings.OPENAI_MODEL
