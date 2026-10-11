@@ -210,7 +210,8 @@ export const AgentDetails: React.FC = () => {
   }
 
   const isOwner = user?.id === agent.developer_id;
-  const canInvoke = agent.price <= 0 || isOwner || user?.is_admin || negotiation?.status === 'accepted';
+  const canInvoke = agent.execution_available !== false
+    && (agent.price <= 0 || isOwner || user?.is_admin || negotiation?.status === 'accepted');
 
   return (
     <Container maxWidth="lg" sx={{ mt: 3, mb: 6 }}>
@@ -454,7 +455,11 @@ export const AgentDetails: React.FC = () => {
           </Typography>
         </Stack>
 
-        {!token ? (
+        {agent.execution_available === false ? (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This listing is available for discovery, but it does not have a connected executable implementation yet. Running it is disabled and no tokens will be charged.
+          </Alert>
+        ) : !token ? (
           <Alert severity="info" sx={{ mb: 2 }}>
             Sign in to negotiate token rates and send task queries to this agent.
           </Alert>

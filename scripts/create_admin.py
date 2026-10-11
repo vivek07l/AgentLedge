@@ -1,23 +1,23 @@
 """Create or promote the local marketplace admin account using console prompts."""
 from getpass import getpass
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 from src.auth.security import get_password_hash
 from src.config import get_settings
-from src.database.models import Base, User
+from src.database.models import User
 
 
 def main() -> None:
     settings = get_settings()
     engine = create_engine(settings.DATABASE_URL)
-    Base.metadata.create_all(bind=engine)
-
-    columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        raise SystemExit("The database schema is not initialized. Apply the reviewed Alembic migrations first.")
+    columns = {column["name"] for column in inspector.get_columns("users")}
     if "is_admin" not in columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        raise SystemExit("The users.is_admin migration is missing. Apply the reviewed Alembic migrations first.")
 
     username = input("Admin username: ").strip()
     email = input("Admin email: ").strip()

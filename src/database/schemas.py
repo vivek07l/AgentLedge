@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Dict
 from datetime import datetime
 
@@ -35,12 +35,20 @@ class UserResponse(UserBase):
 
 # Agent schemas
 class AgentBase(BaseModel):
-    name: str
-    description: str
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=5000)
     price: float = Field(ge=0)
     minimum_price: Optional[float] = Field(default=None, ge=0)
-    category: str = "General"
-    capabilities: str = ""
+    category: str = Field(default="General", min_length=1, max_length=80)
+    capabilities: str = Field(default="", max_length=1000)
+
+    @field_validator("name", "description", "category", "capabilities")
+    @classmethod
+    def trim_text_fields(cls, value: str, info) -> str:
+        cleaned = value.strip()
+        if not cleaned and info.field_name != "capabilities":
+            raise ValueError(f"{info.field_name} cannot be blank")
+        return cleaned
 
 class AgentCreate(AgentBase):
     pass
@@ -50,6 +58,7 @@ class AgentResponse(AgentBase):
     developer_id: int
     is_active: bool
     is_purchased: bool = False
+    execution_available: bool = False
     average_rating: Optional[float] = None
     review_count: int = 0
     success_rate: Optional[float] = None

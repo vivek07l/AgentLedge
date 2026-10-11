@@ -19,6 +19,7 @@ import {
   Person as PersonIcon,
   AdminPanelSettings as AdminIcon,
   Handyman as ProviderIcon,
+  ApprovalRounded as ApprovalIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../../store/AuthContext';
 
@@ -41,6 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { text: 'Marketplace', icon: <StoreIcon />, path: '/marketplace', requiresAuth: false },
     { text: 'History', icon: <HistoryIcon />, path: '/history', requiresAuth: true },
     { text: 'Profile', icon: <PersonIcon />, path: '/profile', requiresAuth: true },
+    ...(user ? [{ text: 'AgentMesh Approvals', icon: <ApprovalIcon />, path: '/approvals', requiresAuth: true }] : []),
     ...(user?.is_admin ? [{ text: 'Admin Control', icon: <AdminIcon />, path: '/admin', requiresAuth: true }] : []),
     ...(user?.is_developer ? [{ text: 'Provider Listings', icon: <ProviderIcon />, path: '/provider/listings', requiresAuth: true }] : []),
   ];

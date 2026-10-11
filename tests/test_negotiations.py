@@ -21,13 +21,17 @@ def account(client, is_provider=False):
     return {"Authorization": f"Bearer {logged_in.json()['access_token']}"}
 
 
-def listing(client, headers, price=10, minimum=8):
+def listing(client, headers, test_db, price=10, minimum=8):
     response = client.post("/agents/create", headers=headers, json={
         "name": "Resume Reviewer", "description": "Supported service",
         "category": "Career", "capabilities": "resume review",
         "price": price, "minimum_price": minimum,
     })
     assert response.status_code == 200, response.text
+    from src.database.models import Agent
+    stored = test_db.query(Agent).filter(Agent.id == response.json()["id"]).one()
+    stored.implementation_key = "resume_reviewer"
+    test_db.commit()
     return response.json()
 
 
@@ -40,10 +44,10 @@ def accepted_deal(client, buyer, service):
     return response.json()
 
 
-def test_negotiation_is_persistent_and_enforces_provider_floor_budget_and_round_limit(client):
+def test_negotiation_is_persistent_and_enforces_provider_floor_budget_and_round_limit(client, test_db):
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider)
+    service = listing(client, provider, test_db)
 
     too_small = client.post("/negotiations", headers=buyer, json={
         "agent_id": service["id"], "buyer_budget": 7.99, "initial_offer": 5,
@@ -75,12 +79,12 @@ def test_negotiation_is_persistent_and_enforces_provider_floor_budget_and_round_
     assert rounds["status"] == "failed"
 
 
-def test_successful_live_execution_settles_once_at_agreed_price_and_persists_history(client, monkeypatch):
+def test_successful_live_execution_settles_once_at_agreed_price_and_persists_history(client, test_db, monkeypatch):
     import src.main as main
 
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider, price=10, minimum=7)
+    service = listing(client, provider, test_db, price=10, minimum=7)
     credits = client.post("/tokens/purchase", headers=buyer, json={"amount": 25})
     assert credits.status_code == 200
     deal = accepted_deal(client, buyer, service)
@@ -131,12 +135,12 @@ def test_successful_live_execution_settles_once_at_agreed_price_and_persists_his
     assert client.get(f"/agents/{service['id']}/analytics", headers=buyer).status_code == 404
 
 
-def test_failed_execution_releases_reservation_and_persists_failure(client, monkeypatch):
+def test_failed_execution_releases_reservation_and_persists_failure(client, test_db, monkeypatch):
     import src.main as main
 
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider, price=6, minimum=4)
+    service = listing(client, provider, test_db, price=6, minimum=4)
     client.post("/tokens/purchase", headers=buyer, json={"amount": 10})
     deal = accepted_deal(client, buyer, service)
     monkeypatch.setattr(main, "has_live_ai_key", lambda: True)
@@ -156,12 +160,12 @@ def test_failed_execution_releases_reservation_and_persists_failure(client, monk
     assert history[0]["amount_charged"] == 0
 
 
-def test_live_execution_with_insufficient_balance_does_not_call_provider(client, monkeypatch):
+def test_live_execution_with_insufficient_balance_does_not_call_provider(client, test_db, monkeypatch):
     import src.main as main
 
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider, price=6, minimum=4)
+    service = listing(client, provider, test_db, price=6, minimum=4)
     deal = accepted_deal(client, buyer, service)
     monkeypatch.setattr(main, "has_live_ai_key", lambda: True)
     called = {"value": False}
@@ -178,12 +182,12 @@ def test_live_execution_with_insufficient_balance_does_not_call_provider(client,
     assert called["value"] is False
 
 
-def test_settled_transfer_cannot_overdraw_buyer_or_duplicate_provider_credit(client, monkeypatch):
+def test_settled_transfer_cannot_overdraw_buyer_or_duplicate_provider_credit(client, test_db, monkeypatch):
     import src.main as main
 
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider, price=6, minimum=4)
+    service = listing(client, provider, test_db, price=6, minimum=4)
     client.post("/tokens/purchase", headers=buyer, json={"amount": 6})
     deal1 = accepted_deal(client, buyer, service)
     deal2 = accepted_deal(client, buyer, service)
@@ -205,23 +209,23 @@ def test_settled_transfer_cannot_overdraw_buyer_or_duplicate_provider_credit(cli
     assert client.get("/users/me", headers=provider).json()["token_balance"] == 6
 
 
-def test_negotiation_and_history_records_are_participant_scoped(client):
+def test_negotiation_and_history_records_are_participant_scoped(client, test_db):
     provider = account(client, is_provider=True)
     buyer = account(client)
     outsider = account(client)
-    service = listing(client, provider)
+    service = listing(client, provider, test_db)
     deal = accepted_deal(client, buyer, service)
     hidden = client.get(f"/negotiations/{deal['id']}", headers=outsider)
     assert hidden.status_code == 403
     assert client.get("/users/me/invocations", headers=outsider).json() == []
 
 
-def test_idempotency_also_deduplicates_free_labeled_demo_runs(client, monkeypatch):
+def test_idempotency_also_deduplicates_free_labeled_demo_runs(client, test_db, monkeypatch):
     import src.main as main
 
     provider = account(client, is_provider=True)
     buyer = account(client)
-    service = listing(client, provider, price=0, minimum=0)
+    service = listing(client, provider, test_db, price=0, minimum=0)
     monkeypatch.setattr(main, "has_live_ai_key", lambda: False)
     payload = {"input_text": "A local sample"}
     headers = {**buyer, "Idempotency-Key": "free-demo-retry"}
@@ -230,7 +234,65 @@ def test_idempotency_also_deduplicates_free_labeled_demo_runs(client, monkeypatc
     assert first.status_code == second.status_code == 200
     assert first.json()["invocation_id"] == second.json()["invocation_id"]
     assert first.json()["demo_mode"] is True
+    assert first.json()["execution_mode"] == "demo"
+    assert first.json()["provider"] is None
     assert len(client.get("/users/me/invocations", headers=buyer).json()) == 1
+
+
+def test_unmapped_listing_is_discovery_only_and_cannot_be_invoked(client):
+    owner = account(client, is_provider=True)
+    service = client.post("/agents/create", headers=owner, json={
+        "name": "Unmapped Data Cleaner", "description": "An advertised service without an implementation",
+        "category": "Data", "capabilities": "cleaning", "price": 0, "minimum_price": 0,
+    })
+    assert service.status_code == 200, service.text
+    assert service.json()["execution_available"] is False
+    result = client.post(f"/agents/invoke/{service.json()['id']}", headers=owner, json={"input_text": "clean this"})
+    assert result.status_code == 409
+    assert "no executable implementation" in result.json()["detail"]
+    assert client.get("/users/me", headers=owner).json()["token_balance"] == 0
+
+
+def test_gemini_provider_selection_requires_explicit_provider_and_model(monkeypatch):
+    from types import SimpleNamespace
+    import src.agents.providers as providers
+
+    config = SimpleNamespace(
+        AI_PROVIDER="gemini", AI_MODEL="gemini-test-model", OPENAI_MODEL="gpt-4.1-mini",
+        GEMINI_API_KEY="test-gemini-key", OPENAI_API_KEY="",
+    )
+    monkeypatch.setattr(providers, "get_settings", lambda: config)
+    assert providers.selected_provider() == "gemini"
+    assert providers.selected_model() == "gemini-test-model"
+    assert providers.has_provider_credentials() is True
+    model_client = providers.create_model_client()
+    assert str(model_client.base_url).startswith(providers.GEMINI_OPENAI_COMPATIBLE_BASE_URL)
+
+
+def test_live_mode_without_provider_key_fails_instead_of_returning_demo(client, test_db, monkeypatch):
+    import src.main as main
+
+    monkeypatch.setattr(main.settings, "AI_MODE", "live")
+    monkeypatch.setattr(main, "has_provider_credentials", lambda: False)
+    monkeypatch.setattr(main, "selected_provider", lambda: "gemini")
+    monkeypatch.setattr(main, "selected_model", lambda: "gemini-test-model")
+    provider = account(client, is_provider=True)
+    service = client.post("/agents/create", headers=provider, json={
+        "name": "Resume Reviewer", "description": "A live mode configuration check",
+        "category": "Career", "capabilities": "resume review", "price": 0,
+    })
+    assert service.status_code == 200, service.text
+    from src.database.models import Agent
+    test_db.query(Agent).filter(Agent.id == service.json()["id"]).one().implementation_key = "resume_reviewer"
+    test_db.commit()
+
+    status_response = client.get("/system/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["ai_mode"] == "error"
+    result = client.post(f"/agents/invoke/{service.json()['id']}", headers=provider, json={"input_text": "test"})
+    assert result.status_code == 503
+    assert "No demo response was substituted" in result.json()["detail"]
+    assert client.get("/users/me/invocations", headers=provider).json() == []
 
 
 def test_concurrent_reservations_cannot_spend_the_same_balance_twice(tmp_path):

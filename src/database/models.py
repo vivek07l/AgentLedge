@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -48,6 +48,7 @@ class OAuthAuthorizationCode(Base):
     redirect_uri = Column(String, nullable=False)
     code_challenge = Column(String, nullable=False)
     code_challenge_method = Column(String, nullable=False, default="S256")
+    scopes = Column(String, nullable=False, default="marketplace:read")
     audience = Column(String, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -70,6 +71,21 @@ class OAuthAccessToken(Base):
 
     user = relationship("User", back_populates="oauth_tokens")
 
+
+class OAuthActionApproval(Base):
+    """One-time user approval for a specific AgentMesh write action."""
+    __tablename__ = "oauth_action_approvals"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    action = Column(String, nullable=False)
+    payload_json = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending", server_default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    approved_at = Column(DateTime, nullable=True)
+    consumed_at = Column(DateTime, nullable=True)
+
 class Agent(Base):
     __tablename__ = "agents"
 
@@ -78,6 +94,7 @@ class Agent(Base):
     description = Column(String)
     category = Column(String, default="General", nullable=False)
     capabilities = Column(String, default="", nullable=False)
+    implementation_key = Column(String, nullable=True)
     developer_id = Column(Integer, ForeignKey("users.id"))
     price = Column(Float)
     minimum_price = Column(Float, nullable=True)
@@ -97,6 +114,8 @@ class AgentPurchase(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     agent_id = Column(Integer, ForeignKey("agents.id"))
     purchase_price = Column(Float)
+    # Retained for compatibility with the legacy purchase migration/schema.
+    tokens_remaining = Column(Float, nullable=False, default=0.0, server_default="0.0")
     purchase_date = Column(DateTime, default=datetime.utcnow)
 
     # Relationships

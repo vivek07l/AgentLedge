@@ -16,6 +16,7 @@ export interface Agent {
   review_count: number;
   success_rate?: number | null;
   completed_invocations: number;
+  execution_available?: boolean;
 }
 
 export interface CreateAgentData {

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, inspect, text
 from src.database.bootstrap import upgrade_legacy_schema
 
 
-def test_legacy_user_table_upgrade_adds_admin_flag_without_losing_rows():
+def test_populated_legacy_user_table_requires_reviewed_migration_without_changes():
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(text(
@@ -15,15 +15,13 @@ def test_legacy_user_table_upgrade_adds_admin_flag_without_losing_rows():
         ))
         connection.execute(text("INSERT INTO users (username) VALUES ('existing-member')"))
 
-    upgrade_legacy_schema(engine)
+    with pytest.raises(RuntimeError, match="Automatic schema bootstrap is disabled"):
+        upgrade_legacy_schema(engine)
     columns = {column["name"] for column in inspect(engine).get_columns("users")}
-    assert "is_admin" in columns
+    assert columns == {"id", "username"}
     with engine.connect() as connection:
-        row = connection.execute(text(
-            "SELECT username, is_admin FROM users WHERE id = 1"
-        )).one()
+        row = connection.execute(text("SELECT username FROM users WHERE id = 1")).one()
     assert row.username == "existing-member"
-    assert row.is_admin in (False, 0)
     engine.dispose()
 
 
@@ -121,6 +119,7 @@ def test_builtin_invocation_adapts_form_payloads(
     agent = Agent(
         name=display_name, description="Invocation adapter test", category="Testing",
         capabilities="test", developer_id=user.id, price=0, is_active=True,
+        implementation_key=key,
     )
     test_db.add(agent)
     test_db.commit()
@@ -167,7 +166,7 @@ def test_no_api_key_returns_labeled_demo_and_does_not_score_reputation(client, t
     test_db.add(user)
     test_db.commit()
     test_db.refresh(user)
-    agent = Agent(name="Code Reviewer", description="demo", category="Testing", capabilities="code", developer_id=user.id, price=0)
+    agent = Agent(name="Code Reviewer", description="demo", category="Testing", capabilities="code", developer_id=user.id, price=0, implementation_key="code_reviewer")
     test_db.add(agent)
     test_db.commit()
     test_db.refresh(agent)
@@ -244,7 +243,7 @@ def test_verified_review_requires_successful_own_invocation_and_blocks_duplicate
     consumer = User(username=f"consumer_{suffix}", email=f"consumer_{suffix}@example.com", hashed_password=get_password_hash("Safe-Test-Password-2026!"), is_developer=False, is_admin=False, token_balance=0)
     test_db.add_all([provider, consumer])
     test_db.commit()
-    agent = Agent(name="Resume Reviewer", description="review", category="Career", capabilities="resume", developer_id=provider.id, price=0)
+    agent = Agent(name="Resume Reviewer", description="review", category="Career", capabilities="resume", developer_id=provider.id, price=0, implementation_key="resume_reviewer")
     test_db.add(agent)
     test_db.commit()
     test_db.refresh(agent)
