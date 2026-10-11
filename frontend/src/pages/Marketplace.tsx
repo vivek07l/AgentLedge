@@ -280,13 +280,14 @@ export const Marketplace: React.FC = () => {
           />
         </Stack>
 
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ width: { xs: '100%', sm: 'auto' } }}>
           <Button
             size="small"
             variant={viewMode === 'grid' ? 'contained' : 'outlined'}
             onClick={() => setViewMode('grid')}
             startIcon={<GridViewRounded />}
             sx={{
+              width: { xs: 'calc(50% - 4px)', sm: 'auto' },
               minHeight: 34,
               fontSize: '0.75rem',
               bgcolor: viewMode === 'grid' ? '#171717' : '#FFFFFF',
@@ -300,6 +301,7 @@ export const Marketplace: React.FC = () => {
             onClick={() => setViewMode('compare')}
             startIcon={<TableRowsRounded />}
             sx={{
+              width: { xs: 'calc(50% - 4px)', sm: 'auto' },
               minHeight: 34,
               fontSize: '0.75rem',
               bgcolor: viewMode === 'compare' ? '#F6C900' : '#FFFFFF',
@@ -314,7 +316,7 @@ export const Marketplace: React.FC = () => {
             disabled={authLoading}
             onClick={() => navigate(token ? '/provider/listings' : '/auth/register',
               token ? undefined : { state: { accountType: 'provider' } })}
-            sx={{ minHeight: 34, fontSize: '0.75rem', ml: 1 }}
+            sx={{ minHeight: 34, fontSize: '0.75rem', ml: { sm: 1 }, width: { xs: '100%', sm: 'auto' } }}
           >
             {authLoading ? 'Loading account…' : 'Publish a service →'}
           </Button>
@@ -501,13 +503,13 @@ export const Marketplace: React.FC = () => {
 
       {/* Discovery Results Count and Metrics Summary */}
       <Stack
-        direction="row"
-        alignItems="center"
+        direction={{ xs: 'column', sm: 'row' }}
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
         justifyContent="space-between"
         sx={{ mt: 2, mb: 2 }}
       >
         <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="h5" sx={{ fontWeight: 850, color: '#171717' }}>
+          <Typography variant="h5" sx={{ fontWeight: 850, color: '#171717', fontSize: { xs: '1.15rem', sm: '1.5rem' } }}>
             {viewMode === 'compare' ? 'Provider Comparison Matrix' : 'Active Services Catalog'}
           </Typography>
           <Chip
@@ -517,7 +519,7 @@ export const Marketplace: React.FC = () => {
           />
         </Stack>
 
-        <Typography variant="caption" sx={{ color: '#5A5A52', fontFamily: 'monospace' }}>
+        <Typography variant="caption" sx={{ color: '#5A5A52', fontFamily: 'monospace', overflowWrap: 'anywhere' }}>
           RESULTS VERIFIED VIA AGENTSLEDGE API
         </Typography>
       </Stack>

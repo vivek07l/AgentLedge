@@ -83,7 +83,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             maxWidth: 1600,
             width: '100%',
             mx: 'auto',
-            px: { xs: 2, sm: 3 },
+            px: { xs: 1, sm: 3 },
           }}
         >
           {showMenuButton && (
@@ -92,7 +92,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               aria-label="open drawer"
               edge="start"
               onClick={onMenuClick}
-              sx={{ mr: 2 }}
+              sx={{ mr: { xs: 0.75, sm: 2 }, flexShrink: 0 }}
             >
               <MenuIcon />
             </IconButton>
@@ -103,16 +103,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 1.5,
+              gap: { xs: 0.75, sm: 1.5 },
               cursor: 'pointer',
               flexGrow: 1,
+              minWidth: 0,
             }}
             onClick={() => navigate('/marketplace')}
           >
             <Box
               sx={{
-                width: 36,
-                height: 36,
+                width: { xs: 30, sm: 36 },
+                height: { xs: 30, sm: 36 },
+                flexShrink: 0,
                 display: 'grid',
                 placeItems: 'center',
                 color: '#171717',
@@ -135,6 +137,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 component="div"
                 sx={{
                   fontWeight: 900,
+                  fontSize: { xs: '1.05rem', sm: '1.25rem' },
                   letterSpacing: '-0.03em',
                   lineHeight: 1.05,
                   color: '#FFFFFF',
@@ -161,7 +164,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </Box>
 
           {/* Navigation Controls */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 } }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1.5 }, flexShrink: 0 }}>
             <Button
               variant={isMarketplace ? 'contained' : 'outlined'}
               color="secondary"
@@ -169,6 +172,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               startIcon={<StorefrontRounded sx={{ fontSize: 18 }} />}
               onClick={() => navigate('/marketplace')}
               sx={{
+                display: { xs: 'none', sm: 'inline-flex' },
                 fontSize: '0.8rem',
                 minWidth: 0,
                 px: { xs: 1.25, sm: 2 },
@@ -187,6 +191,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               startIcon={<PlayCircleFilledRounded sx={{ fontSize: 18, color: isSimulation ? '#171717' : '#B7F000' }} />}
               onClick={() => navigate('/simulation')}
               sx={{
+                display: { xs: 'none', sm: 'inline-flex' },
                 fontSize: '0.8rem',
                 minWidth: 0,
                 px: { xs: 1.25, sm: 2 },
@@ -203,9 +208,21 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Tooltip title="Add simulated demo tokens">
                 <Chip
                   icon={<TokenIcon sx={{ color: '#171717 !important' }} />}
-                  label={`${user?.token_balance || 0} demo tokens`}
+                  label={
+                    <>
+                      <Box component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>
+                        {user?.token_balance || 0}
+                      </Box>
+                      <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                        {user?.token_balance || 0} demo tokens
+                      </Box>
+                    </>
+                  }
+                  aria-label={`${user?.token_balance || 0} demo tokens`}
                   onClick={() => setShowPurchaseDialog(true)}
                   sx={{
+                    height: { xs: 30, sm: 32 },
+                    '& .MuiChip-label': { px: { xs: 0.5, sm: 1 } },
                     bgcolor: '#F6C900',
                     color: '#171717',
                     fontWeight: 800,

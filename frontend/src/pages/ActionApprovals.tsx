@@ -51,27 +51,27 @@ export const ActionApprovals: React.FC = () => {
     }
   };
 
-  return <Container maxWidth="md" sx={{ py: 4 }}>
-    <Typography variant="h4" sx={{ mb: 1 }}>AgentMesh action approvals</Typography>
+  return <Container maxWidth="md" sx={{ py: { xs: 2, sm: 3, md: 4 }, px: { xs: 1, sm: 2 } }}>
+    <Typography variant="h4" sx={{ mb: 1, fontSize: { xs: '1.65rem', sm: '2.125rem' } }}>AgentsLedge approvals</Typography>
     <Typography color="text.secondary" sx={{ mb: 3 }}>
       Review each exact action before the connected agent can submit an offer, accept a price, spend tokens, or post a review. Approvals expire after ten minutes and can be used once.
     </Typography>
     {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
     {notice && <Alert severity="success" sx={{ mb: 2 }}>{notice}</Alert>}
     {loading ? <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
-      : items.length === 0 ? <Alert severity="info">There are no pending AgentMesh actions to approve.</Alert>
+      : items.length === 0 ? <Alert severity="info">There are no pending AgentsLedge actions to approve.</Alert>
       : <Stack spacing={2}>{items.map((item) => <Card key={item.approval_id} variant="outlined">
-        <CardContent>
-          <Typography variant="h6">{labels[item.action] || item.action}</Typography>
+        <CardContent sx={{ p: { xs: 1.75, sm: 2.5 }, '&:last-child': { pb: { xs: 1.75, sm: 2.5 } } }}>
+          <Typography variant="h6" sx={{ overflowWrap: 'anywhere' }}>{labels[item.action] || item.action}</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1 }}>
             Expires {new Date(item.expires_at).toLocaleString()}
           </Typography>
-          <Box component="pre" sx={{ p: 1.5, bgcolor: 'action.hover', borderRadius: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13 }}>
+          <Box component="pre" sx={{ p: { xs: 1, sm: 1.5 }, bgcolor: 'action.hover', borderRadius: 1, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', maxWidth: '100%', overflowX: 'auto', fontSize: { xs: 12, sm: 13 } }}>
             {JSON.stringify(item.payload, null, 2)}
           </Box>
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
-            <Button color="inherit" disabled={busyId !== null} onClick={() => void decide(item, 'reject')}>Reject</Button>
-            <Button variant="contained" disabled={busyId !== null} onClick={() => void decide(item, 'approve')}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ mt: 1.5 }}>
+            <Button fullWidth sx={{ width: { sm: 'auto' } }} color="inherit" disabled={busyId !== null} onClick={() => void decide(item, 'reject')}>Reject</Button>
+            <Button fullWidth sx={{ width: { sm: 'auto' } }} variant="contained" disabled={busyId !== null} onClick={() => void decide(item, 'approve')}>
               {busyId === item.approval_id ? <CircularProgress size={20} color="inherit" /> : 'Approve this action'}
             </Button>
           </Stack>

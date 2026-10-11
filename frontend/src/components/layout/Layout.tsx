@@ -11,7 +11,9 @@ interface LayoutProps {
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { token } = useAuth();
-  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  // Keep the temporary drawer closed on phones at first render. The desktop
+  // drawer is permanent and does not depend on this state.
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
 
   const toggleSidebar = () => {
     setIsSidebarOpen(!isSidebarOpen);
