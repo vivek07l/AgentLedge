@@ -20,6 +20,7 @@ import time
 from collections import defaultdict, deque
 from threading import Lock
 from urllib.parse import urlencode
+import math
 
 from src.database.models import User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken, OAuthActionApproval
 from src.marketplace.discovery import discover_agents, reputation_for_agent
@@ -361,6 +362,13 @@ class SimulationRequest(BaseModel):
     task: str = Field(min_length=8, max_length=280)
     token_budget: int = Field(default=12, ge=1, le=1000)
 
+class ActionApprovalCreate(BaseModel):
+    action: Literal["start_negotiation", "submit_offer", "accept_negotiation", "reject_negotiation", "invoke_service", "submit_review"]
+    payload: Dict[str, Any]
+
+class ActionApprovalDecision(BaseModel):
+    decision: Literal["approve", "reject"]
+
 class NegotiationCreateRequest(BaseModel):
     agent_id: int
     buyer_budget: float = Field(gt=0, le=100000)
@@ -482,6 +490,30 @@ def _approved_action_payload(db: Session, user: User, action: str, payload: dict
         return {"agent_id": agent.id, "service_name": agent.name, "buyer_budget": budget,
                 "initial_offer": offer, "listed_price": agent.price}
 
+    if action == "submit_review":
+        agent_id, invocation_id, rating = payload.get("agent_id"), payload.get("invocation_id"), payload.get("rating")
+        review_text = payload.get("review_text") or ""
+        if (not isinstance(agent_id, int) or isinstance(agent_id, bool)
+                or not isinstance(invocation_id, int) or isinstance(invocation_id, bool)
+                or not isinstance(rating, int) or isinstance(rating, bool) or not 1 <= rating <= 5):
+            raise HTTPException(status_code=422, detail="Review needs valid service and execution IDs and a rating from 1 to 5")
+        if not isinstance(review_text, str) or len(review_text) > 1000:
+            raise HTTPException(status_code=422, detail="Review text must be 1000 characters or fewer")
+        invocation = db.query(AgentInvocation).filter(
+            AgentInvocation.id == invocation_id,
+            AgentInvocation.agent_id == agent_id,
+            AgentInvocation.user_id == user.id,
+            AgentInvocation.status == "succeeded",
+        ).first()
+        if not invocation:
+            raise HTTPException(status_code=403, detail="A completed invocation by you is required to review this service")
+        if invocation.agent.developer_id == user.id:
+            raise HTTPException(status_code=403, detail="You cannot review your own service")
+        if invocation.review:
+            raise HTTPException(status_code=409, detail="This execution has already been reviewed")
+        return {"agent_id": agent_id, "service_name": invocation.agent.name,
+                "invocation_id": invocation_id, "rating": rating, "review_text": review_text.strip()}
+
     negotiation_id = payload.get("negotiation_id")
     if not isinstance(negotiation_id, int) or isinstance(negotiation_id, bool) or negotiation_id <= 0:
         raise HTTPException(status_code=422, detail="negotiation_id must be positive")
@@ -533,18 +565,6 @@ def _approved_action_payload(db: Session, user: User, action: str, payload: dict
                 "agreed_price": float(negotiation.agreed_price), "input_data": input_data,
                 "idempotency_key": idempotency_key.strip()}
 
-    if action == "submit_review":
-        agent_id, invocation_id, rating = payload.get("agent_id"), payload.get("invocation_id"), payload.get("rating")
-        review_text = payload.get("review_text") or ""
-        if not isinstance(agent_id, int) or not isinstance(invocation_id, int) or not isinstance(rating, int) or not 1 <= rating <= 5:
-            raise HTTPException(status_code=422, detail="Review needs valid service and execution IDs and a rating from 1 to 5")
-        if not isinstance(review_text, str) or len(review_text) > 1000:
-            raise HTTPException(status_code=422, detail="Review text must be 1000 characters or fewer")
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
-        if not agent:
-            raise HTTPException(status_code=404, detail="Service not found")
-        return {"agent_id": agent_id, "service_name": agent.name, "invocation_id": invocation_id,
-                "rating": rating, "review_text": review_text.strip()}
     raise HTTPException(status_code=422, detail="Unsupported action approval")
 
 
@@ -638,13 +658,6 @@ class ReviewCreate(BaseModel):
     invocation_id: int
     rating: int
     review_text: Optional[str] = None
-
-class ActionApprovalCreate(BaseModel):
-    action: Literal["start_negotiation", "submit_offer", "accept_negotiation", "reject_negotiation", "invoke_service", "submit_review"]
-    payload: Dict[str, Any]
-
-class ActionApprovalDecision(BaseModel):
-    decision: Literal["approve", "reject"]
 
 class AdminLoginRequest(BaseModel):
     username: str

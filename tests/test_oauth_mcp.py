@@ -3,7 +3,7 @@ import hashlib
 from urllib.parse import parse_qs, urlparse
 
 from src.auth.security import get_password_hash
-from src.database.models import User
+from src.database.models import Agent, User
 
 
 RESOURCE = "http://127.0.0.1:8011/mcp"
@@ -278,12 +278,10 @@ def test_oauth_scope_consent_persists_read_write_and_mcp_writes_are_independentl
         "invocation_id": invocation_id, "rating": 5, "review_text": "Clear and helpful",
     })
     assert review.status_code == 201, review.text
-    duplicate_review_approval = _approve_action(client, write_headers, website_headers, "submit_review", {
-        **review_payload,
+    duplicate_review_approval = client.post("/mcp/action-approvals", headers=write_headers, json={
+        "action": "submit_review", "payload": review_payload,
     })
-    assert client.post(f"/agents/{service['id']}/reviews", headers={**write_headers, **duplicate_review_approval}, json={
-        "invocation_id": invocation_id, "rating": 5,
-    }).status_code == 409
+    assert duplicate_review_approval.status_code == 409
 
 
 def test_oauth_csrf_form_is_bound_to_signed_authorization_request(client, test_db):

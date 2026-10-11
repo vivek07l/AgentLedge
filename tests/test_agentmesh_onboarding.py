@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, inspect, text
 from src.database.bootstrap import upgrade_legacy_schema
 
 
-def test_legacy_user_table_upgrade_adds_admin_flag_without_losing_rows():
+def test_populated_legacy_user_table_requires_reviewed_migration_without_changes():
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(text(
@@ -15,15 +15,13 @@ def test_legacy_user_table_upgrade_adds_admin_flag_without_losing_rows():
         ))
         connection.execute(text("INSERT INTO users (username) VALUES ('existing-member')"))
 
-    upgrade_legacy_schema(engine)
+    with pytest.raises(RuntimeError, match="Automatic schema bootstrap is disabled"):
+        upgrade_legacy_schema(engine)
     columns = {column["name"] for column in inspect(engine).get_columns("users")}
-    assert "is_admin" in columns
+    assert columns == {"id", "username"}
     with engine.connect() as connection:
-        row = connection.execute(text(
-            "SELECT username, is_admin FROM users WHERE id = 1"
-        )).one()
+        row = connection.execute(text("SELECT username FROM users WHERE id = 1")).one()
     assert row.username == "existing-member"
-    assert row.is_admin in (False, 0)
     engine.dispose()
 
 
