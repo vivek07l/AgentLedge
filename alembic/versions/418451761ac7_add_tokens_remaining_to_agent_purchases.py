@@ -19,7 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add tokens_remaining column to agent_purchases table
+    # Some legacy databases may already have received this additive column
+    # before Alembic tracking was introduced. Keep the historical revision
+    # safe to resume without attempting to add the same column twice.
+    inspector = sa.inspect(op.get_bind())
+    existing_columns = {column["name"] for column in inspector.get_columns("agent_purchases")}
+    if "tokens_remaining" in existing_columns:
+        return
+
     with op.batch_alter_table('agent_purchases') as batch_op:
         batch_op.add_column(sa.Column('tokens_remaining', sa.Float(), nullable=False, server_default='0.0'))
 

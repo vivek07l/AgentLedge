@@ -125,8 +125,9 @@ def _adopt_verified_legacy_database(connection) -> None:
 
     # These additions prove the target is the known post-baseline schema and
     # avoid treating a partially migrated database as a valid legacy baseline.
-    # tokens_remaining is intentionally optional: the known production schema
-    # lacks it, and adoption adds it with a safe zero default below.
+    # tokens_remaining is intentionally optional: revision 418451761ac7 is an
+    # ancestor of LEGACY_BASELINE, so adoption must apply its additive change
+    # before recording that baseline or Alembic will skip the revision.
     if not ({"price", "price_per_token"} & _columns(inspector, "agents")):
         mismatches.append("agents has neither price nor legacy price_per_token")
     if not ({"purchase_price", "tokens_purchased"} & _columns(inspector, "agent_purchases")):
@@ -151,8 +152,8 @@ def _adopt_verified_legacy_database(connection) -> None:
     try:
         purchase_columns = _columns(inspector, "agent_purchases")
         if "tokens_remaining" not in purchase_columns:
-            # Adding a non-null zero default preserves every purchase record
-            # and makes existing rows compatible with the current ORM.
+            # Preserve existing purchases and match revision 418451761ac7's
+            # non-null zero default before advancing to its descendant baseline.
             connection.execute(text(
                 "ALTER TABLE agent_purchases ADD COLUMN tokens_remaining FLOAT NOT NULL DEFAULT 0.0"
             ))
