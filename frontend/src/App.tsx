@@ -28,6 +28,7 @@ import { AdminLogin } from './pages/admin/AdminLogin';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { ProviderRoute } from './components/auth/ProviderRoute';
 import { AgentManagement } from './pages/developer/AgentManagement';
+import { ActionApprovals } from './pages/ActionApprovals';
 
 const App: React.FC = () => {
   return (
@@ -52,6 +53,7 @@ const App: React.FC = () => {
             <Route element={<Layout />}>
               {/* Public Routes */}
               <Route path="/marketplace" element={<Marketplace />} />
+              <Route path="/approvals" element={<ProtectedRoute><ActionApprovals /></ProtectedRoute>} />
               <Route path="/simulation" element={<Simulation />} />
               <Route path="/terms" element={<LegalInfo kind="terms" />} />
               <Route path="/privacy" element={<LegalInfo kind="privacy" />} />

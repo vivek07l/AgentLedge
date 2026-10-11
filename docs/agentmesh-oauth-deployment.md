@@ -1,12 +1,18 @@
 # AgentsLedge OAuth and AgentMesh MCP setup
 
-This guide covers the read-only AgentMesh connection to AgentsLedge. It does not deploy either service.
+This guide covers per-user OAuth for the read and write AgentMesh tools. It does not deploy either service.
 
 ## What the connection allows
 
-AgentMesh exposes three read-only tools: `discover_services`, `list_service_categories`, and `compare_providers`. Each call is authenticated for the person who approved the connection. The adapter validates the opaque access token through the AgentsLedge OAuth introspection endpoint, checks issuer, expiry, the `marketplace:read` scope, and the exact MCP audience, then forwards that same bearer token to the backend. AgentsLedge stores only hashes of access tokens and single-use authorization codes. Access tokens last 15 minutes; the client can revoke one sooner.
+Read tools require `marketplace:read`. Negotiation, invocation, and review tools require `marketplace:read marketplace:write`. Each call is authenticated for the person who approved the connection. The adapter validates the opaque access token through the AgentsLedge OAuth introspection endpoint, checks issuer, expiry, supported scopes, and the exact MCP audience, then forwards that same bearer token to the backend. Backend route authorization repeats the scope check and derives user identity from the token, not caller input. AgentsLedge stores only hashes of access tokens and single-use authorization codes. Access tokens last 15 minutes; the client can revoke one sooner.
 
-The authorization flow uses OAuth Authorization Code with PKCE S256, dynamic client registration, an exact registered redirect URI, a signed CSRF cookie, and an explicit sign-in/consent page. Existing username/password login at `POST /token` and its JWTs are unchanged. OAuth tokens can only call read-only listing endpoints. Negotiations, purchases, invocation, token changes, user history, and reviews remain unavailable through MCP.
+The authorization flow uses OAuth Authorization Code with PKCE S256, dynamic client registration, an exact registered redirect URI, a signed CSRF cookie, and an explicit sign-in/consent page. The consent screen displays whether the client requests read-only or read/write access. Existing username/password login at `POST /token` and its JWTs are unchanged. OAuth callers cannot purchase tokens, change balances, access admin operations, or read another user's private records. The write tools call only existing negotiation, invocation, and verified-review routes.
+
+Every AgentMesh write tool first creates a pending action approval. The account owner must sign in to the AgentsLedge frontend and approve that exact action at `/approvals`; the MCP caller then repeats the tool with its one-time `approval_id`. The backend binds approval to the authenticated user, action, price/budget, service, and request contents, expires approvals after ten minutes, and consumes each approved action once. MCP OAuth credentials cannot list or approve requests. Website actions remain explicit user clicks. Tool descriptions are guidance; backend scope, owner, state, budget, and approval checks are authoritative.
+
+`invoke_service_agent` requires an accepted negotiation for paid listings and a stable idempotency key. Existing backend logic reserves tokens, settles only after successful live execution, releases the reservation on failure, and returns stored results for safe retries. Demo responses are labeled and are not reviewable. A live provider error returns a 502 and is not replaced with a demo result; if `AI_MODE=live` but the selected provider key is missing, invocation returns a 503 before reservation and never falls back to demo.
+
+Marketplace listings are discoverable even when they do not have a supported implementation. The API includes `execution_available`; unsupported listings are shown as discovery-only, and invocation rejects them before any token reservation. The built-in handlers remain the supported executable implementations.
 
 ## Required settings
 
@@ -32,6 +38,8 @@ The adapter needs:
 | `AGENTMESH_MCP_TRANSPORT` | `stdio` | Use `streamable-http` only behind HTTPS for remote access. |
 | `AGENTMESH_MCP_PORT` | `8011` | Local MCP HTTP port when using Streamable HTTP. |
 
+Gemini runs in the backend through its existing OpenAI-compatible endpoint, not in the adapter. Set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, a Gemini-supported `AI_MODEL`, and `AI_MODE=live`. Never put the key in frontend or adapter configuration. A configured key alone leaves the application in demo mode. Set `AI_MODEL` explicitly for Gemini; when blank the provider helper falls back to `OPENAI_MODEL`.
+
 Use the backend `.env.example` and adapter `.env.example` as templates. Never commit `.env` files, passwords, access tokens, or generated secrets.
 
 ## Local setup and test flow
@@ -41,8 +49,10 @@ Use the backend `.env.example` and adapter `.env.example` as templates. Never co
 3. In `agentmesh-mcp`, create/install its Python environment and install the package with its test extra.
 4. Set the three adapter variables above to the local URLs. The backend defaults already match those local values.
 5. Run adapter transport locally with Streamable HTTP. A client first reads the MCP protected-resource metadata, follows the authorization server URL, registers a public OAuth client, opens the AgentsLedge sign-in/consent page, receives a PKCE authorization code, and exchanges it for a 15-minute token.
-6. Call `discover_services`, `list_service_categories`, or `compare_providers`. The adapter validates and forwards the user's token on every tool call.
-7. Revoke with `POST /oauth/revoke` using the issued `token` and its `client_id`, or wait for expiry.
+6. Call read tools to discover, compare, and inspect services. For writes, the OAuth consent must grant both read and write scopes.
+7. A write tool without `approval_id` only queues an approval request. The user opens AgentsLedge `/approvals`, checks the exact offer, price, service input, or review, and chooses Approve or Reject. After an approval, repeat the same MCP tool with the returned `approval_id`; a changed action requires a new approval.
+8. Use `get_negotiation_status` to show live state and provider counter prices before requesting approval. After acceptance, request a separate approval before service execution. Reuse the same idempotency key for retries. Use `get_invocation_result` for that same authenticated account, then request approval for a review after a successful live invocation.
+9. Revoke with `POST /oauth/revoke` using the issued `token` and its `client_id`, or wait for expiry.
 
 For local stdio/Inspector work, no HTTP bearer header is available; it is a local process boundary. Remote Streamable HTTP requires the SDK auth middleware and token verifier and rejects missing, expired, wrong-issuer, wrong-audience, or wrong-scope tokens.
 
@@ -56,10 +66,10 @@ Host the FastAPI API and MCP adapter as separate services, with a public HTTPS a
 - backend `CORS_ORIGINS` to the frontend's exact HTTPS origin;
 - `SECRET_KEY` from the host's secret manager and `DATABASE_URL` to persistent managed storage.
 
-Run the schema migration with `alembic upgrade head` before starting the backend. Terminate TLS at the host/reverse proxy; do not publish the MCP listener over plain HTTP. Keep registration, authorization, token, introspection, and revoke routes on the API origin. Use a shared edge rate limiter in front of OAuth routes for multi-worker deployments; the included limiter is process-local and is only a baseline. Configure backups, access logs that omit credentials, health checks, and monitoring. Verify the metadata issuer exactly matches the canonical public origin through the HTTPS proxy before registering a client.
+The current branch has one Alembic head, `4e6f2a9c1b70`. On a database with a recorded Alembic revision, inspect that revision and schema first, then run the normal `alembic upgrade head` on a verified backup/staging copy. A populated database without `alembic_version` is refused by default. Only after verifying its table/column shape and taking a backup, use `alembic -x adopt_legacy=true upgrade head`: the migration environment validates the known legacy schema, records the verified `f17c2e80a391` baseline (not head), fills missing `agent_purchases.tokens_remaining` with zero without removing purchase rows, and runs the remaining forward migrations. If any expected table or column is missing or an unexpected later addition is present, the command fails before adopting. The final migration aligns the fresh-install tables and recognized legacy column names without dropping data. Test the exact process against a non-production PostgreSQL copy and review the SQL/schema diff before production. Never reset or recreate production tables. Terminate TLS at the host/reverse proxy; do not publish the MCP listener over plain HTTP. Keep registration, authorization, token, introspection, and revoke routes on the API origin. Use a shared edge rate limiter in front of OAuth routes for multi-worker deployments; the included limiter is process-local and is only a baseline. Configure backups, access logs that omit credentials, health checks, and monitoring. Verify the metadata issuer exactly matches the canonical public origin through the HTTPS proxy before registering a client.
 
 ## Compatibility and limits
 
-OpenAI's current documentation says ChatGPT custom MCP connections support OAuth and DCR/CIMD options, and supports Streamable HTTP. This project implements DCR with public clients; it does not implement CIMD. OpenAI's public Go-plan documentation does not explicitly guarantee that a user on ChatGPT Go can add and use a custom remote MCP server. Plan, workspace, role, surface, and feature rollout affect availability, so Go compatibility is **not established**; verify in the Plugins/Apps controls visible in the actual account. The current tools are search and comparison only; no marketplace writes are exposed.
+OpenAI's current documentation says ChatGPT custom MCP connections support OAuth and DCR/CIMD options, and supports Streamable HTTP. This project implements DCR with public clients; it does not implement CIMD. OpenAI's public Go-plan documentation does not explicitly guarantee that a user on ChatGPT Go can add and use a custom remote MCP server. Plan, workspace, role, surface, and feature rollout affect availability, so Go compatibility is **not established**; verify in the Plugins/Apps controls visible in the actual account.
 
-The included OAuth authorization server is project code, not a reviewed identity provider. Before a public production release, obtain a security review and add account recovery and email verification, a durable shared rate-limit store, operational monitoring, and formal key rotation/retention procedures. Do not treat successful local tests as proof of production security or ChatGPT Go availability.
+The included OAuth authorization server is project code, not a reviewed identity provider. Before enabling write scopes on a public production endpoint, obtain a security review and add account recovery and email verification, a durable shared rate-limit store, operational monitoring, and formal key rotation/retention procedures. Do not change Render settings or deploy as part of this code change. Do not treat successful local tests as proof of production security or ChatGPT Go availability.

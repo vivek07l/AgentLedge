@@ -121,6 +121,7 @@ def test_builtin_invocation_adapts_form_payloads(
     agent = Agent(
         name=display_name, description="Invocation adapter test", category="Testing",
         capabilities="test", developer_id=user.id, price=0, is_active=True,
+        implementation_key=key,
     )
     test_db.add(agent)
     test_db.commit()
@@ -167,7 +168,7 @@ def test_no_api_key_returns_labeled_demo_and_does_not_score_reputation(client, t
     test_db.add(user)
     test_db.commit()
     test_db.refresh(user)
-    agent = Agent(name="Code Reviewer", description="demo", category="Testing", capabilities="code", developer_id=user.id, price=0)
+    agent = Agent(name="Code Reviewer", description="demo", category="Testing", capabilities="code", developer_id=user.id, price=0, implementation_key="code_reviewer")
     test_db.add(agent)
     test_db.commit()
     test_db.refresh(agent)
@@ -244,7 +245,7 @@ def test_verified_review_requires_successful_own_invocation_and_blocks_duplicate
     consumer = User(username=f"consumer_{suffix}", email=f"consumer_{suffix}@example.com", hashed_password=get_password_hash("Safe-Test-Password-2026!"), is_developer=False, is_admin=False, token_balance=0)
     test_db.add_all([provider, consumer])
     test_db.commit()
-    agent = Agent(name="Resume Reviewer", description="review", category="Career", capabilities="resume", developer_id=provider.id, price=0)
+    agent = Agent(name="Resume Reviewer", description="review", category="Career", capabilities="resume", developer_id=provider.id, price=0, implementation_key="resume_reviewer")
     test_db.add(agent)
     test_db.commit()
     test_db.refresh(agent)

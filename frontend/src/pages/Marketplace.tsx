@@ -33,13 +33,14 @@ import {
 import { AgentCard } from '../components/agents/AgentCard';
 import { agentService } from '../services/agent';
 import { useAuth } from '../store/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { Agent } from '../types/agent';
 import axios from 'axios';
 
 export const Marketplace: React.FC = () => {
-  const { token } = useAuth();
+  const { token, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,13 +52,18 @@ export const Marketplace: React.FC = () => {
   const [minimumRating, setMinimumRating] = useState('');
   const [minimumSuccess, setMinimumSuccess] = useState('');
   const [offset, setOffset] = useState(0);
-  const [aiMode, setAiMode] = useState<'demo' | 'live' | null>(null);
+  const [aiMode, setAiMode] = useState<'demo' | 'live' | 'error' | null>(null);
+  const [aiModeMessage, setAiModeMessage] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'compare'>('grid');
+  const publishedNotice = (location.state as { publishedService?: string } | null)?.publishedService;
 
   useEffect(() => {
     axios
       .get(`${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/system/status`)
-      .then((response) => setAiMode(response.data.ai_mode))
+      .then((response) => {
+        setAiMode(response.data.ai_mode);
+        setAiModeMessage(response.data.message || null);
+      })
       .catch(() => setAiMode(null));
   }, []);
 
@@ -115,6 +121,9 @@ export const Marketplace: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: { xs: 2, md: 3 }, mb: 6 }}>
+      {publishedNotice && <Alert severity="success" sx={{ mb: 2 }}>
+        “{publishedNotice}” was published. The marketplace catalog has been refreshed.
+      </Alert>}
       {/* Lamborghini-inspired Hero Banner */}
       <Box
         sx={{
@@ -222,8 +231,7 @@ export const Marketplace: React.FC = () => {
           }}
         >
           <strong>Local Demo Mode Active:</strong> You can register, explore providers, and run
-          mock requests without external API credentials. Demo runs are clearly labeled and do not
-          alter reputation scores.
+          labeled sample requests without external API credentials. Demo runs do not alter reputation scores.
         </Alert>
       )}
       {aiMode === 'live' && (
@@ -237,8 +245,12 @@ export const Marketplace: React.FC = () => {
             boxShadow: '3px 3px 0 #171717',
           }}
         >
-          <strong>Live AI Provider Connected:</strong> Live execution is active. Automated fallback
-          to labeled demo responses engages seamlessly if external providers become unreachable.
+          <strong>Live AI Provider Connected:</strong> Live execution is active. Provider failures are reported as failures; no demo result is substituted.
+        </Alert>
+      )}
+      {aiMode === 'error' && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          <strong>Live provider configuration error:</strong> {aiModeMessage || 'The configured live provider is missing its API key. No demo response will be substituted.'}
         </Alert>
       )}
 
@@ -299,10 +311,12 @@ export const Marketplace: React.FC = () => {
           <Button
             size="small"
             variant="outlined"
-            onClick={() => navigate('/auth/register', { state: { accountType: 'provider' } })}
+            disabled={authLoading}
+            onClick={() => navigate(token ? '/provider/listings' : '/auth/register',
+              token ? undefined : { state: { accountType: 'provider' } })}
             sx={{ minHeight: 34, fontSize: '0.75rem', ml: 1 }}
           >
-            Publish a service →
+            {authLoading ? 'Loading account…' : 'Publish a service →'}
           </Button>
         </Stack>
       </Box>

@@ -24,6 +24,7 @@ import { Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import { useAuth } from '../../store/AuthContext';
 import { agentService } from '../../services/agent';
 import { Agent } from '../../types/agent';
+import { useNavigate } from 'react-router-dom';
 
 interface AgentFormData {
   name: string;
@@ -36,9 +37,12 @@ interface AgentFormData {
 
 export const AgentManagement: React.FC = () => {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
@@ -74,21 +78,50 @@ export const AgentManagement: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token) return;
+    if (!token || saving) return;
+    setError(null);
+    setSuccess(null);
+    const cleaned = {
+      ...formData,
+      name: formData.name.trim(),
+      description: formData.description.trim(),
+      category: formData.category.trim(),
+      capabilities: formData.capabilities.trim(),
+    };
+    if (!cleaned.name || !cleaned.description || !cleaned.category) {
+      setError('Enter a service name, description, and category before publishing.');
+      return;
+    }
+    if (!Number.isFinite(cleaned.price) || cleaned.price < 0
+      || (cleaned.minimum_price !== null && (!Number.isFinite(cleaned.minimum_price)
+        || cleaned.minimum_price < 0 || cleaned.minimum_price > cleaned.price))) {
+      setError('Check the listed price and minimum price. The minimum must be between zero and the listed price.');
+      return;
+    }
 
     try {
+      setSaving(true);
       const response = selectedAgent
-        ? await agentService.updateAgent(token, selectedAgent.id, formData)
-        : await agentService.createAgent(token, formData);
+        ? await agentService.updateAgent(token, selectedAgent.id, cleaned)
+        : await agentService.createAgent(token, cleaned);
 
       if (response.status === 'success') {
+        const createdName = cleaned.name;
+        if (!selectedAgent) {
+          handleCloseDialog();
+          navigate('/marketplace', { state: { publishedService: createdName } });
+          return;
+        }
         await fetchAgents();
         handleCloseDialog();
+        setSuccess(`“${createdName}” was updated.`);
       } else {
         setError(response.error || 'Failed to save agent');
       }
     } catch (err) {
-      setError('Failed to save agent');
+      setError(err instanceof Error ? `Could not save this service: ${err.message}` : 'Could not save this service. Check your connection and try again.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -145,6 +178,7 @@ export const AgentManagement: React.FC = () => {
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {success && <Alert severity="success" sx={{ mb: 2 }}>{success}</Alert>}
 
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h5">Agent Management</Typography>
@@ -196,11 +230,15 @@ export const AgentManagement: React.FC = () => {
           <DialogTitle>{selectedAgent ? 'Edit Agent' : 'Create Agent'}</DialogTitle>
           <DialogContent>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+              {!selectedAgent && <Alert severity="info">
+                Publishing creates a searchable marketplace listing. New listings are discovery-only until an executable implementation is connected and approved by the platform.
+              </Alert>}
               <TextField
                 label="Name"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 required
+                inputProps={{ maxLength: 120 }}
                 fullWidth
               />
               <TextField
@@ -208,6 +246,7 @@ export const AgentManagement: React.FC = () => {
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 required
+                inputProps={{ maxLength: 5000 }}
                 multiline
                 rows={4}
                 fullWidth
@@ -217,6 +256,7 @@ export const AgentManagement: React.FC = () => {
                 value={formData.category}
                 onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                 required
+                inputProps={{ maxLength: 80 }}
                 fullWidth
               />
               <TextField
@@ -224,6 +264,7 @@ export const AgentManagement: React.FC = () => {
                 value={formData.capabilities}
                 onChange={(e) => setFormData({ ...formData, capabilities: e.target.value })}
                 helperText="Describe what this agent can do so others can find it."
+                inputProps={{ maxLength: 1000 }}
                 fullWidth
               />
               <TextField
@@ -246,9 +287,9 @@ export const AgentManagement: React.FC = () => {
             </Box>
           </DialogContent>
           <DialogActions>
-            <Button onClick={handleCloseDialog}>Cancel</Button>
-            <Button type="submit" variant="contained" color="primary">
-              {selectedAgent ? 'Save' : 'Create'}
+            <Button onClick={handleCloseDialog} disabled={saving}>Cancel</Button>
+            <Button type="submit" variant="contained" color="primary" disabled={saving}>
+              {saving ? <CircularProgress size={20} color="inherit" /> : selectedAgent ? 'Save' : 'Publish service'}
             </Button>
           </DialogActions>
         </form>

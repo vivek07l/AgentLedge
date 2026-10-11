@@ -48,7 +48,7 @@ def test_provider_can_discover_own_listing(client):
     assert any(item["id"] == agent_id for item in client.get("/users/me/agents", headers=headers).json())
 
 
-def test_no_key_invocation_returns_labeled_demo(client, monkeypatch):
+def test_no_key_invocation_returns_labeled_demo(client, test_db, monkeypatch):
     from src.main import AGENT_NAME_TO_KEY
     import src.main as main_module
 
@@ -61,6 +61,9 @@ def test_no_key_invocation_returns_labeled_demo(client, monkeypatch):
         "price": 0,
     })
     assert created.status_code == 200, created.text
+    from src.database.models import Agent
+    test_db.query(Agent).filter(Agent.id == created.json()["id"]).one().implementation_key = "resume_reviewer"
+    test_db.commit()
     monkeypatch.setattr(main_module, "has_live_ai_key", lambda: False)
 
     response = client.post(
@@ -92,7 +95,7 @@ def test_legacy_upfront_purchase_is_replaced_by_negotiation(client):
     assert "POST /negotiations" in response.json()["detail"]
 
 
-def test_member_can_add_demo_tokens_purchase_service_and_invoke_it(client, monkeypatch):
+def test_member_can_add_demo_tokens_purchase_service_and_invoke_it(client, test_db, monkeypatch):
     import src.main as main_module
 
     provider = provider_headers(client)
@@ -104,6 +107,9 @@ def test_member_can_add_demo_tokens_purchase_service_and_invoke_it(client, monke
         "price": 5,
     })
     assert listing.status_code == 200, listing.text
+    from src.database.models import Agent
+    test_db.query(Agent).filter(Agent.id == listing.json()["id"]).one().implementation_key = "resume_reviewer"
+    test_db.commit()
 
     suffix = uuid4().hex[:10]
     username = f"buyer_{suffix}"

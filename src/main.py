@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import create_engine, update, func
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from jose import jwt, JWTError
 import json
 from uuid import uuid4
@@ -21,8 +21,7 @@ from collections import defaultdict, deque
 from threading import Lock
 from urllib.parse import urlencode
 
-from src.database.models import Base, User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken
-from src.database.bootstrap import upgrade_legacy_schema
+from src.database.models import User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken, OAuthActionApproval
 from src.marketplace.discovery import discover_agents, reputation_for_agent
 from src.marketplace.reviews import create_verified_review
 from src.marketplace.simulation import run_marketplace_simulation
@@ -54,7 +53,6 @@ from src.agents.writing_assistant import WritingAssistantAgent
 from src.agents.technical_troubleshooter import TechnicalTroubleshooterAgent
 
 from pydantic import BaseModel, Field
-from openai import APIError
 from src.agents.demo_responses import make_demo_response
 from src.agents.providers import has_provider_credentials, selected_model, selected_provider
 
@@ -106,8 +104,6 @@ async def limit_oauth_endpoint_attempts(request: Request, call_next):
 # Database setup
 engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-upgrade_legacy_schema(engine)
-Base.metadata.create_all(bind=engine)
 
 
 def get_db():
@@ -117,7 +113,9 @@ def get_db():
     finally:
         db.close()
 
-OAUTH_SCOPES = {"marketplace:read"}
+OAUTH_SCOPES = {"marketplace:read", "marketplace:write"}
+OAUTH_READ_SCOPE = "marketplace:read"
+OAUTH_WRITE_SCOPE = "marketplace:write"
 OAUTH_CODE_TTL_SECONDS = 300
 OAUTH_TOKEN_TTL_SECONDS = 900
 
@@ -129,6 +127,15 @@ def _oauth_issuer(request: Request) -> str:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _normalise_oauth_scopes(value: str) -> str | None:
+    requested = value.split()
+    if not requested or len(set(requested)) != len(requested) or not set(requested).issubset(OAUTH_SCOPES):
+        return None
+    if OAUTH_READ_SCOPE not in requested:
+        return None
+    return " ".join(scope for scope in (OAUTH_READ_SCOPE, OAUTH_WRITE_SCOPE) if scope in requested)
 
 
 def _pkce_matches(verifier: str, challenge: str) -> bool:
@@ -143,8 +150,21 @@ def _oauth_form_html(params: dict[str, str], csrf: str, error: str = "") -> str:
         for name, value in params.items()
     )
     message = f'<p role="alert">{html.escape(error)}</p>' if error else ""
+    has_write_access = OAUTH_WRITE_SCOPE in params.get("scope", "").split()
+    write_permissions = """<h2>Marketplace write</h2><ul>
+<li>Create negotiations and submit offers.</li>
+<li>Accept or reject negotiations.</li>
+<li>Invoke services, potentially spending marketplace tokens.</li>
+<li>Submit reviews for eligible completed executions.</li>
+</ul>""" if has_write_access else ""
+    permission_intro = """<p>This MCP client is requesting the following permissions:</p>
+<h2>Marketplace read</h2><ul>
+<li>Search and compare public marketplace listings.</li>
+<li>View service details, reputation and reviews.</li>
+<li>View your own negotiation status and invocation results.</li>
+</ul>"""
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Connect to AgentsLedge</title><style>body{{font:16px system-ui;background:#f4f0e8;color:#211d17;margin:0;padding:8vh 16px}}main{{max-width:460px;margin:auto;background:#fff;padding:32px;border:2px solid #211d17;box-shadow:8px 8px #e5b547}}h1{{font-size:28px}}p{{line-height:1.55}}label{{display:block;margin:16px 0 6px}}input{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #777;font:inherit}}button{{margin-top:22px;padding:12px 18px;border:2px solid #211d17;background:#e5b547;font:700 16px system-ui;cursor:pointer}}small{{display:block;margin-top:16px;color:#555}}</style></head><body><main><p>AGENTSLEDGE Ã‚Â· SECURE CONNECTION</p><h1>Connect your marketplace account</h1><p>This MCP client is requesting read-only access to search public services and compare provider listings. Your password is sent only to this AgentsLedge server.</p>{message}<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="csrf" value="{csrf}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in and approve read-only access</button></form><small>Access expires after 15 minutes. You can revoke it by signing out all active integrations from your account settings when available; current tokens expire automatically.</small></main></body></html>"""
+<title>Connect to AgentsLedge</title><style>body{{font:16px system-ui;background:#f4f0e8;color:#211d17;margin:0;padding:8vh 16px}}main{{max-width:520px;margin:auto;background:#fff;padding:32px;border:2px solid #211d17;box-shadow:8px 8px #e5b547}}h1{{font-size:28px}}p{{line-height:1.55}}h2{{font-size:18px;margin:20px 0 8px}}ul{{padding-left:22px;line-height:1.55}}label{{display:block;margin:16px 0 6px}}input{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #777;font:inherit}}button{{margin-top:22px;padding:12px 18px;border:2px solid #211d17;background:#e5b547;font:700 16px system-ui;cursor:pointer}}small{{display:block;margin-top:16px;color:#555}}</style></head><body><main><p>AGENTSLEDGE · SECURE CONNECTION</p><h1>Connect your marketplace account</h1>{permission_intro}{write_permissions}{message}<form method="post" action="/oauth/authorize">{hidden}<input type="hidden" name="csrf" value="{csrf}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in and approve this access</button></form><small>Access expires after 15 minutes. Tokens are linked to your account and expire automatically; clients may revoke them sooner.</small></main></body></html>"""
 
 
 def _oauth_request_cookie(request_data: dict[str, str]) -> str:
@@ -227,11 +247,12 @@ async def oauth_authorize_page(
     client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
     if response_type != "code" or not client or redirect_uri not in json.loads(client.redirect_uris_json):
         raise HTTPException(status_code=400, detail="Invalid OAuth client or redirect URI")
-    if scope != "marketplace:read" or resource != settings.AGENTMESH_MCP_RESOURCE_URL or code_challenge_method != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", code_challenge):
-        raise HTTPException(status_code=400, detail="Only PKCE S256 and marketplace:read are supported")
+    granted_scopes = _normalise_oauth_scopes(scope)
+    if not granted_scopes or resource != settings.AGENTMESH_MCP_RESOURCE_URL or code_challenge_method != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", code_challenge):
+        raise HTTPException(status_code=400, detail="Only PKCE S256 and supported marketplace scopes are accepted")
     if not state or len(state) > 512:
         raise HTTPException(status_code=400, detail="A valid state value is required")
-    params = {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect_uri, "state": state, "scope": scope, "resource": resource, "code_challenge": code_challenge, "code_challenge_method": code_challenge_method, "created_at": str(int(_utcnow().timestamp()))}
+    params = {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect_uri, "state": state, "scope": granted_scopes, "resource": resource, "code_challenge": code_challenge, "code_challenge_method": code_challenge_method, "created_at": str(int(_utcnow().timestamp()))}
     csrf = secrets.token_urlsafe(24)
     html = _oauth_form_html(params, csrf)
     response = HTMLResponse(html)
@@ -260,12 +281,15 @@ async def oauth_authorize_submit(
         raise HTTPException(status_code=400, detail="Invalid authorization request")
     if created > int(_utcnow().timestamp()) or int(_utcnow().timestamp()) - created > 600:
         raise HTTPException(status_code=400, detail="OAuth authorization request expired")
+    granted_scopes = _normalise_oauth_scopes(scope)
+    if not granted_scopes or granted_scopes != signed_request.get("scope"):
+        raise HTTPException(status_code=400, detail="The requested OAuth permissions changed; restart authorization")
     client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
     user = db.query(User).filter(User.username == username).first()
     if not client or redirect_uri not in json.loads(client.redirect_uris_json) or not user or not user.is_active or not verify_password(password, user.hashed_password):
         return HTMLResponse(_oauth_form_html(signed_request, csrf, "Sign-in failed. Check your account details and try again."), status_code=401)
     raw_code = secrets.token_urlsafe(32)
-    db.add(OAuthAuthorizationCode(code_hash=_token_hash(raw_code), client_id=client_id, user_id=user.id, redirect_uri=redirect_uri, code_challenge=code_challenge, code_challenge_method="S256", audience=resource, expires_at=_utcnow() + timedelta(seconds=OAUTH_CODE_TTL_SECONDS)))
+    db.add(OAuthAuthorizationCode(code_hash=_token_hash(raw_code), client_id=client_id, user_id=user.id, redirect_uri=redirect_uri, code_challenge=code_challenge, code_challenge_method="S256", scopes=granted_scopes, audience=resource, expires_at=_utcnow() + timedelta(seconds=OAUTH_CODE_TTL_SECONDS)))
     db.commit()
     target = redirect_uri + ("&" if "?" in redirect_uri else "?") + urlencode({"code": raw_code, "state": state, "iss": _oauth_issuer(request)})
     response = RedirectResponse(target, status_code=303)
@@ -293,20 +317,29 @@ async def oauth_token(
     user = db.query(User).filter(User.id == stored.user_id, User.is_active.is_(True)).first()
     if not client or not user:
         raise HTTPException(status_code=400, detail="Authorization is no longer valid")
-    db.delete(stored)
     access_token = secrets.token_urlsafe(48)
     expires_at = _utcnow() + timedelta(seconds=OAUTH_TOKEN_TTL_SECONDS)
-    db.add(OAuthAccessToken(token_hash=_token_hash(access_token), client_id=client_id, user_id=user.id, scopes="marketplace:read", audience=stored.audience, expires_at=expires_at))
+    granted_scopes = _normalise_oauth_scopes(stored.scopes)
+    if not granted_scopes:
+        raise HTTPException(status_code=400, detail="Authorization contains unsupported permissions")
+    deleted = db.query(OAuthAuthorizationCode).filter(
+        OAuthAuthorizationCode.code_hash == stored.code_hash
+    ).delete(synchronize_session=False)
+    if deleted != 1:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Authorization code has already been exchanged")
+    db.add(OAuthAccessToken(token_hash=_token_hash(access_token), client_id=client_id, user_id=user.id, scopes=granted_scopes, audience=stored.audience, expires_at=expires_at))
     db.commit()
-    return {"access_token": access_token, "token_type": "Bearer", "expires_in": OAUTH_TOKEN_TTL_SECONDS, "scope": "marketplace:read"}
+    return {"access_token": access_token, "token_type": "Bearer", "expires_in": OAUTH_TOKEN_TTL_SECONDS, "scope": granted_scopes}
 
 
 @app.post("/oauth/introspect")
 async def oauth_introspect(request: Request, db: Session = Depends(get_db)):
     token = request.headers.get("authorization", "").partition(" ")[2]
     stored = db.query(OAuthAccessToken).filter(OAuthAccessToken.token_hash == _token_hash(token)).first()
+    token_scopes = set(stored.scopes.split()) if stored else set()
     if (not stored or stored.revoked_at is not None or stored.expires_at <= _utcnow()
-            or "marketplace:read" not in stored.scopes.split()
+            or not token_scopes.issubset(OAUTH_SCOPES) or OAUTH_READ_SCOPE not in token_scopes
             or stored.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
         return {"active": False}
     user = db.query(User).filter(User.id == stored.user_id, User.is_active.is_(True)).first()
@@ -342,12 +375,17 @@ class ProviderCounterRequest(BaseModel):
 def has_live_ai_key() -> bool:
     return settings.AI_MODE.strip().lower() == "live" and has_provider_credentials()
 
+
+def live_provider_is_misconfigured() -> bool:
+    return settings.AI_MODE.strip().lower() == "live" and not has_provider_credentials()
+
 @app.get("/system/status")
 async def system_status():
     return {
-        "ai_mode": "live" if has_live_ai_key() else "demo",
+        "ai_mode": "error" if live_provider_is_misconfigured() else "live" if has_live_ai_key() else "demo",
         "provider": selected_provider(),
         "model": selected_model(),
+        "message": "AI_MODE is live but the selected provider API key is missing." if live_provider_is_misconfigured() else None,
     }
 
 @app.post("/simulation/run")
@@ -371,16 +409,27 @@ async def get_current_user(
     try:
         oauth_token = db.query(OAuthAccessToken).filter(OAuthAccessToken.token_hash == _token_hash(token)).first()
         if oauth_token is not None:
+            token_scopes = set(oauth_token.scopes.split())
             if (oauth_token.revoked_at is not None or oauth_token.expires_at <= _utcnow()
-                    or "marketplace:read" not in oauth_token.scopes.split()
+                    or not token_scopes.issubset(OAUTH_SCOPES)
                     or oauth_token.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
                 raise credentials_exception
-            is_read_route = bool(re.fullmatch(r"/agents(?:/\d+(?:/reputation)?)?", request.url.path))
-            if request.method != "GET" or not is_read_route:
-                raise HTTPException(status_code=403, detail="OAuth token is restricted to marketplace read access")
+            read_route = request.method == "GET" and bool(
+                re.fullmatch(r"/agents(?:/\d+(?:/(?:reputation|reviews))?)?|/negotiations/\d+|/users/me/invocations(?:/\d+)?", request.url.path)
+            )
+            write_route = request.method == "POST" and bool(
+                re.fullmatch(r"/negotiations(?:/\d+/(?:offers|accept|reject))?|/agents/invoke/\d+|/agents/\d+/reviews|/mcp/action-approvals", request.url.path)
+            )
+            required_scope = OAUTH_READ_SCOPE if read_route else OAUTH_WRITE_SCOPE if write_route else None
+            if not required_scope:
+                raise HTTPException(status_code=403, detail="This API operation is not available to MCP clients")
+            if required_scope not in token_scopes:
+                raise HTTPException(status_code=403, detail=f"OAuth token requires {required_scope}")
             user = db.query(User).filter(User.id == oauth_token.user_id, User.is_active.is_(True)).first()
             if user is None:
                 raise credentials_exception
+            request.state.oauth_user_id = user.id
+            request.state.oauth_client_id = oauth_token.client_id
             return user
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
@@ -407,6 +456,181 @@ async def get_optional_current_user(
 # Compatibility name referenced by the project's existing test fixture.
 get_current_active_user = get_current_user
 
+
+def _approved_action_payload(db: Session, user: User, action: str, payload: dict) -> dict:
+    """Validate and snapshot the exact operation so approval cannot be reused for changed terms."""
+    def required_number(key: str) -> float:
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise HTTPException(status_code=422, detail=f"{key} must be a finite number")
+        return float(value)
+
+    if action == "start_negotiation":
+        agent_id = payload.get("agent_id")
+        if not isinstance(agent_id, int) or isinstance(agent_id, bool) or agent_id <= 0:
+            raise HTTPException(status_code=422, detail="agent_id must be positive")
+        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.is_active.is_(True)).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Service not found")
+        if agent.developer_id == user.id:
+            raise HTTPException(status_code=400, detail="You cannot negotiate with your own listing")
+        budget, offer = required_number("buyer_budget"), required_number("initial_offer")
+        if budget <= 0 or offer <= 0 or offer > budget or budget > 100000:
+            raise HTTPException(status_code=422, detail="Offer and budget are invalid or exceed the allowed budget")
+        if budget < floor_for(agent):
+            raise HTTPException(status_code=422, detail="Your authorized budget is below this provider's minimum price")
+        return {"agent_id": agent.id, "service_name": agent.name, "buyer_budget": budget,
+                "initial_offer": offer, "listed_price": agent.price}
+
+    negotiation_id = payload.get("negotiation_id")
+    if not isinstance(negotiation_id, int) or isinstance(negotiation_id, bool) or negotiation_id <= 0:
+        raise HTTPException(status_code=422, detail="negotiation_id must be positive")
+    negotiation = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
+    if action in {"submit_offer", "accept_negotiation", "reject_negotiation"}:
+        if not negotiation:
+            raise HTTPException(status_code=404, detail="Negotiation not found")
+        if action != "reject_negotiation" and negotiation.buyer_id != user.id:
+            raise HTTPException(status_code=403, detail="Only the buyer can request this action approval")
+        if action == "reject_negotiation" and user.id not in (negotiation.buyer_id, negotiation.provider_id):
+            raise HTTPException(status_code=403, detail="Only a negotiation participant can request rejection")
+        if action == "submit_offer":
+            amount = required_number("amount")
+            if amount <= 0 or amount > negotiation.buyer_budget:
+                raise HTTPException(status_code=422, detail="Offer must be positive and within your approved budget")
+            return {"negotiation_id": negotiation.id, "service_name": negotiation.agent.name,
+                    "buyer_budget": negotiation.buyer_budget, "amount": amount}
+        if action == "accept_negotiation":
+            counter = next((item for item in reversed(negotiation.offers)
+                            if item.actor_role == "provider" and item.action == "counter"), None)
+            if negotiation.status != "awaiting_buyer" or not counter or counter.amount is None:
+                raise HTTPException(status_code=409, detail="There is no provider counter-offer to approve")
+            if counter.amount > negotiation.buyer_budget:
+                raise HTTPException(status_code=409, detail="Provider counter exceeds the approved budget")
+            return {"negotiation_id": negotiation.id, "service_name": negotiation.agent.name,
+                    "agreed_price": float(counter.amount)}
+        if negotiation.status not in ("open", "awaiting_buyer"):
+            raise HTTPException(status_code=409, detail="This negotiation is already closed")
+        return {"negotiation_id": negotiation.id, "service_name": negotiation.agent.name,
+                "current_status": negotiation.status,
+                "actor_role": "buyer" if negotiation.buyer_id == user.id else "provider"}
+
+    if action == "invoke_service":
+        agent_id = payload.get("agent_id")
+        input_data = payload.get("input_data")
+        idempotency_key = payload.get("idempotency_key")
+        if not isinstance(agent_id, int) or not isinstance(input_data, dict):
+            raise HTTPException(status_code=422, detail="agent_id and input_data are required")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 255:
+            raise HTTPException(status_code=422, detail="A valid idempotency key is required")
+        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.is_active.is_(True)).first()
+        if (not negotiation or not agent or negotiation.agent_id != agent.id
+                or negotiation.buyer_id != user.id or negotiation.status != "accepted"
+                or negotiation.agreed_price is None):
+            raise HTTPException(status_code=409, detail="An accepted negotiation for this service is required")
+        if _agent_implementation(agent) is None:
+            raise HTTPException(status_code=409, detail="This listing has no executable implementation. No tokens will be charged.")
+        return {"agent_id": agent.id, "service_name": agent.name, "negotiation_id": negotiation.id,
+                "agreed_price": float(negotiation.agreed_price), "input_data": input_data,
+                "idempotency_key": idempotency_key.strip()}
+
+    if action == "submit_review":
+        agent_id, invocation_id, rating = payload.get("agent_id"), payload.get("invocation_id"), payload.get("rating")
+        review_text = payload.get("review_text") or ""
+        if not isinstance(agent_id, int) or not isinstance(invocation_id, int) or not isinstance(rating, int) or not 1 <= rating <= 5:
+            raise HTTPException(status_code=422, detail="Review needs valid service and execution IDs and a rating from 1 to 5")
+        if not isinstance(review_text, str) or len(review_text) > 1000:
+            raise HTTPException(status_code=422, detail="Review text must be 1000 characters or fewer")
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Service not found")
+        return {"agent_id": agent_id, "service_name": agent.name, "invocation_id": invocation_id,
+                "rating": rating, "review_text": review_text.strip()}
+    raise HTTPException(status_code=422, detail="Unsupported action approval")
+
+
+def _consume_oauth_action_approval(
+    request: Request, db: Session, user: User, action: str, payload: dict,
+) -> None:
+    oauth_user_id = getattr(request.state, "oauth_user_id", None)
+    if oauth_user_id is None:
+        return
+    approval_id = request.headers.get("X-User-Approval", "").strip()
+    if not approval_id:
+        raise HTTPException(status_code=403, detail="Approve this exact action in the AgentsLedge website first")
+    approval = db.query(OAuthActionApproval).filter(
+        OAuthActionApproval.id == approval_id,
+        OAuthActionApproval.user_id == user.id,
+    ).with_for_update().first()
+    if not approval or approval.status != "approved" or approval.expires_at <= _utcnow():
+        raise HTTPException(status_code=403, detail="This action approval is missing, expired, or already used")
+    current_payload = _approved_action_payload(db, user, action, payload)
+    if approval.action != action or approval.payload_json != _canonical_approval_json(current_payload):
+        raise HTTPException(status_code=409, detail="The approved action details changed; request approval again")
+    approval.status = "consumed"
+    approval.consumed_at = _utcnow()
+    db.commit()
+
+
+def _canonical_approval_json(payload: dict) -> str:
+    try:
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail="Approval details must contain valid JSON values") from error
+
+
+@app.post("/mcp/action-approvals")
+async def create_oauth_action_approval(
+    request: Request, body: ActionApprovalCreate,
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+):
+    if getattr(request.state, "oauth_user_id", None) != current_user.id:
+        raise HTTPException(status_code=403, detail="Action approval requests are available only to AgentMesh OAuth clients")
+    canonical = _approved_action_payload(db, current_user, body.action, body.payload)
+    approval = OAuthActionApproval(
+        id=secrets.token_urlsafe(24), user_id=current_user.id, action=body.action,
+        payload_json=_canonical_approval_json(canonical),
+        status="pending", expires_at=_utcnow() + timedelta(minutes=10),
+    )
+    db.add(approval)
+    db.commit()
+    return {"approval_id": approval.id, "action": approval.action, "payload": canonical,
+            "status": approval.status, "expires_at": approval.expires_at.isoformat(),
+            "approval_path": "/approvals"}
+
+
+@app.get("/users/me/action-approvals")
+async def list_my_action_approvals(
+    request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+):
+    if getattr(request.state, "oauth_user_id", None) is not None:
+        raise HTTPException(status_code=403, detail="Use your AgentsLedge website session to review approvals")
+    rows = db.query(OAuthActionApproval).filter(
+        OAuthActionApproval.user_id == current_user.id,
+        OAuthActionApproval.status == "pending",
+        OAuthActionApproval.expires_at > _utcnow(),
+    ).order_by(OAuthActionApproval.created_at.asc()).all()
+    return [{"approval_id": item.id, "action": item.action,
+             "payload": json.loads(item.payload_json), "expires_at": item.expires_at.isoformat()}
+            for item in rows]
+
+
+@app.post("/users/me/action-approvals/{approval_id}")
+async def decide_action_approval(
+    approval_id: str, decision: ActionApprovalDecision, request: Request,
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+):
+    if getattr(request.state, "oauth_user_id", None) is not None:
+        raise HTTPException(status_code=403, detail="Approvals must be decided in your signed-in website session")
+    approval = db.query(OAuthActionApproval).filter(
+        OAuthActionApproval.id == approval_id, OAuthActionApproval.user_id == current_user.id,
+    ).with_for_update().first()
+    if not approval or approval.status != "pending" or approval.expires_at <= _utcnow():
+        raise HTTPException(status_code=404, detail="Pending approval not found or expired")
+    approval.status = "approved" if decision.decision == "approve" else "rejected"
+    approval.approved_at = _utcnow() if decision.decision == "approve" else None
+    db.commit()
+    return {"approval_id": approval.id, "status": approval.status}
+
 class TokenPurchaseRequest(BaseModel):
     amount: float
 
@@ -414,6 +638,13 @@ class ReviewCreate(BaseModel):
     invocation_id: int
     rating: int
     review_text: Optional[str] = None
+
+class ActionApprovalCreate(BaseModel):
+    action: Literal["start_negotiation", "submit_offer", "accept_negotiation", "reject_negotiation", "invoke_service", "submit_review"]
+    payload: Dict[str, Any]
+
+class ActionApprovalDecision(BaseModel):
+    decision: Literal["approve", "reject"]
 
 class AdminLoginRequest(BaseModel):
     username: str
@@ -561,7 +792,7 @@ async def create_agent(
     db.add(db_agent)
     db.commit()
     db.refresh(db_agent)
-    return AgentResponse.model_validate(db_agent)
+    return AgentResponse.model_validate(db_agent).model_copy(update={"execution_available": _agent_implementation(db_agent) is not None})
 
 @app.put("/agents/{agent_id}", response_model=AgentResponse)
 async def update_agent(
@@ -577,7 +808,7 @@ async def update_agent(
         raise HTTPException(status_code=422, detail="Minimum acceptable price must be between zero and the listed price")
     db.commit()
     db.refresh(agent)
-    return AgentResponse.model_validate(agent)
+    return AgentResponse.model_validate(agent).model_copy(update={"execution_available": _agent_implementation(agent) is not None})
 
 @app.delete("/agents/{agent_id}", status_code=204)
 async def delete_agent(
@@ -626,6 +857,7 @@ async def list_agents(
             developer_id=agent.developer_id,
             is_active=agent.is_active,
             is_purchased=agent.id in purchased_agent_ids,
+            execution_available=_agent_implementation(agent) is not None,
             created_at=agent.created_at,
             category=agent.category,
             capabilities=agent.capabilities,
@@ -652,6 +884,7 @@ async def list_my_agents(
     agents = db.query(Agent).filter(Agent.developer_id == current_user.id).order_by(Agent.created_at.desc()).all()
     return [AgentResponse.model_validate(agent).model_copy(update={
         "minimum_price": floor_for(agent), **(reputation_for_agent(db, agent.id) or {}),
+            "execution_available": _agent_implementation(agent) is not None,
     }) for agent in agents]
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -681,6 +914,7 @@ async def get_agent(
         developer_id=agent.developer_id,
         is_active=agent.is_active,
         is_purchased=purchase is not None,
+        execution_available=_agent_implementation(agent) is not None,
         created_at=agent.created_at,
         category=agent.category,
         capabilities=agent.capabilities,
@@ -703,6 +937,7 @@ async def purchase_agent(
 @app.post("/negotiations")
 async def start_negotiation(
     request: NegotiationCreateRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     agent = db.query(Agent).filter(Agent.id == request.agent_id).first()
@@ -710,6 +945,7 @@ async def start_negotiation(
         raise HTTPException(status_code=404, detail="Service not found")
     if agent.minimum_price is not None and (agent.minimum_price < 0 or agent.minimum_price > agent.price):
         raise HTTPException(status_code=409, detail="This listing has an invalid provider minimum price")
+    _consume_oauth_action_approval(http_request, db, current_user, "start_negotiation", request.model_dump())
     negotiation = create_negotiation(db, current_user, agent, request.buyer_budget, request.initial_offer)
     return negotiation_payload(negotiation)
 
@@ -727,29 +963,36 @@ async def get_negotiation(
 @app.post("/negotiations/{negotiation_id}/offers")
 async def submit_buyer_offer(
     negotiation_id: int, request: NegotiationOfferRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
+    _consume_oauth_action_approval(http_request, db, current_user, "submit_offer",
+                                   {"negotiation_id": negotiation_id, "amount": request.amount})
     return negotiation_payload(buyer_offer(db, item, current_user, request.amount))
 
 @app.post("/negotiations/{negotiation_id}/accept")
 async def accept_negotiation_counter(
-    negotiation_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+    negotiation_id: int, http_request: Request,
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
+    _consume_oauth_action_approval(http_request, db, current_user, "accept_negotiation", {"negotiation_id": negotiation_id})
     return negotiation_payload(accept_counter(db, item, current_user))
 
 @app.post("/negotiations/{negotiation_id}/reject")
 async def reject_negotiation_endpoint(
-    negotiation_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+    negotiation_id: int, http_request: Request,
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
+    _consume_oauth_action_approval(http_request, db, current_user, "reject_negotiation", {"negotiation_id": negotiation_id})
     return negotiation_payload(reject_negotiation(db, item, current_user))
 
 @app.get("/users/me/negotiations")
@@ -799,6 +1042,7 @@ async def call_builtin_agent(agent_key: str, agent_instance: Any, input_data: di
 async def invoke_agent(
     agent_id: int,
     input_data: dict,
+    http_request: Request,
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -806,6 +1050,12 @@ async def invoke_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    agent_key = _agent_implementation(agent)
+    if not agent_key:
+        raise HTTPException(status_code=409, detail="This listing is discoverable but has no executable implementation. No tokens were charged.")
+    agent_instance = AVAILABLE_AGENTS.get(agent_key)
+    if not agent_instance:
+        raise HTTPException(status_code=409, detail="This listing's supported implementation is unavailable. No tokens were charged.")
 
     # Paid marketplace use is authorized by a persisted agreement. The agreed
     # backend price, never a client-supplied amount, governs settlement.
@@ -813,6 +1063,8 @@ async def invoke_agent(
     body_idempotency_key = input_data.pop("idempotency_key", None)
     client_supplied_key = bool(idempotency_key or body_idempotency_key)
     request_key = (idempotency_key or body_idempotency_key or str(uuid4())).strip()
+    if not request_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key cannot be empty")
     persisted_input = json.dumps(input_data, sort_keys=True, separators=(",", ":"))
     if len(request_key) > 255:
         raise HTTPException(status_code=422, detail="Idempotency-Key must be at most 255 characters")
@@ -848,15 +1100,13 @@ async def invoke_agent(
         if agent.price and agent.price > 0 and agent.developer_id != current_user.id and not current_user.is_admin:
             raise HTTPException(status_code=402, detail="Negotiate and accept a price before invoking this paid service")
     
-    # Get the agent instance from available agents
-    agent_key = AGENT_NAME_TO_KEY.get(agent.name)
-    
-    if not agent_key:
-        raise HTTPException(status_code=404, detail=f"No implementation mapping for agent: {agent.name}")
-    
-    agent_instance = AVAILABLE_AGENTS.get(agent_key)
-    if not agent_instance:
-        raise HTTPException(status_code=404, detail="Agent implementation not found")
+    if live_provider_is_misconfigured():
+        raise HTTPException(status_code=503, detail=f"AI_MODE=live but the {selected_provider()} API key is not configured. No demo response was substituted and no tokens were charged.")
+
+    _consume_oauth_action_approval(http_request, db, current_user, "invoke_service", {
+        "agent_id": agent_id, "negotiation_id": negotiation_id,
+        "input_data": input_data, "idempotency_key": request_key,
+    })
     
     reserved_invocation = None
     reserved_transaction = None
@@ -910,12 +1160,7 @@ async def invoke_agent(
         if demo_mode:
             result = make_demo_response(agent_key, input_data)
         else:
-            try:
-                result = await call_builtin_agent(agent_key, agent_instance, input_data)
-            except APIError:
-                # Failed live calls become an explicitly labeled free sample.
-                demo_mode = True
-                result = make_demo_response(agent_key, input_data)
+            result = await call_builtin_agent(agent_key, agent_instance, input_data)
         if result.get("status") == "error" or result.get("error"):
             raise RuntimeError("Agent returned an unsuccessful result")
 
@@ -929,11 +1174,20 @@ async def invoke_agent(
         tokens_used = result.get("tokens_used") or (
             token_usage.get("input_tokens", 0) + token_usage.get("output_tokens", 0)
         )
+        response_result = {
+            **result,
+            "output_text": output_text,
+            "execution_mode": "demo" if demo_mode else "live",
+            "provider": None if demo_mode else selected_provider(),
+            "model": None if demo_mode else selected_model(),
+            "demo_mode": demo_mode,
+            "demo_notice": "Sample response only; no AI model processed this request." if demo_mode else None,
+        }
         
         # Record the invocation
         if reserved_invocation:
             db_invocation = reserved_invocation
-            db_invocation.output_data = json.dumps({"output_text": output_text})
+            db_invocation.output_data = json.dumps(response_result, ensure_ascii=False)
             db_invocation.tokens_used = tokens_used
             db_invocation.status = "demo" if demo_mode else "succeeded"
             if reserved_transaction:
@@ -950,7 +1204,7 @@ async def invoke_agent(
                 user_id=current_user.id, agent_id=agent_id,
                 negotiation_id=negotiation.id if negotiation else None,
                 idempotency_key=request_key,
-                input_data=persisted_input, output_data=json.dumps({"output_text": output_text}),
+                input_data=persisted_input, output_data=json.dumps(response_result, ensure_ascii=False),
                 tokens_used=tokens_used, status="demo" if demo_mode else "succeeded",
             )
             db.add(db_invocation)
@@ -958,13 +1212,11 @@ async def invoke_agent(
         db.refresh(db_invocation)
         db.refresh(current_user)
         return {
-            **result,
+            **response_result,
             "output_text": output_text,
             "output_data": output_text,
             "tokens_used": tokens_used,
             "invocation_id": db_invocation.id,
-            "demo_mode": demo_mode,
-            "demo_notice": "Sample response only; no AI model processed this request." if demo_mode else None,
             "agreed_price": charge if negotiation else 0,
             "charged_tokens": charge if (reserved_transaction and not demo_mode) else 0,
             "settlement_status": reserved_transaction.status if reserved_transaction else "not_charged",
@@ -994,7 +1246,7 @@ async def invoke_agent(
         db.commit()
         raise HTTPException(
             status_code=502,
-            detail="The AI service could not complete this request. Check the API connection, API key, and OPENAI_MODEL setting.",
+            detail=f"The configured {selected_provider()} provider could not complete this request. Verify its API key, AI_MODE=live, and AI_MODEL. No demo response was substituted.",
         )
 
 @app.post("/agents/summarize")
@@ -1133,6 +1385,41 @@ async def get_user_invocations(
         "created_at": inv.created_at.isoformat()
     } for inv in invocations]
 
+
+@app.get("/users/me/invocations/{invocation_id}")
+async def get_user_invocation_result(
+    invocation_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return one invocation only when it belongs to the authenticated user."""
+    invocation = db.query(AgentInvocation).filter(
+        AgentInvocation.id == invocation_id,
+        AgentInvocation.user_id == current_user.id,
+    ).first()
+    if invocation is None:
+        raise HTTPException(status_code=404, detail="Invocation not found")
+    try:
+        result = json.loads(invocation.output_data or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    transaction = invocation.token_transaction
+    return {
+        "invocation_id": invocation.id,
+        "agent_id": invocation.agent_id,
+        "agent_name": invocation.agent.name,
+        "negotiation_id": invocation.negotiation_id,
+        "status": invocation.status,
+        "execution_mode": result.get("execution_mode", "demo" if invocation.status == "demo" else "live" if invocation.status == "succeeded" else "failed"),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "result": result,
+        "tokens_used": invocation.tokens_used,
+        "settlement_status": transaction.status if transaction else "not_charged",
+        "amount_charged": transaction.amount if transaction and transaction.status == "settled" else 0,
+        "created_at": invocation.created_at.isoformat() if invocation.created_at else None,
+    }
+
 @app.get("/agents/{agent_id}/reputation")
 async def get_agent_reputation(
     agent_id: int,
@@ -1198,9 +1485,13 @@ async def get_agent_analytics(
 async def create_agent_review(
     agent_id: int,
     review: ReviewCreate,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _consume_oauth_action_approval(http_request, db, current_user, "submit_review", {
+        "agent_id": agent_id, **review.model_dump(),
+    })
     try:
         db_review = create_verified_review(
             db, current_user, agent_id, review.invocation_id, review.rating, review.review_text
@@ -1258,6 +1549,11 @@ AGENT_NAME_TO_KEY = {
     "Technical Troubleshooter": "technical_troubleshooter",
     "Writing Assistant": "writing_assistant"
 }
+
+
+def _agent_implementation(agent: Agent) -> Optional[str]:
+    key = agent.implementation_key
+    return key if key and key in AVAILABLE_AGENTS else None
 
 if __name__ == "__main__":
     import uvicorn
