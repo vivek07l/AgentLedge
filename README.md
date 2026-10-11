@@ -158,3 +158,29 @@ Configure the backend Render service with `AI_PROVIDER=gemini`, `AI_MODE=live`, 
 No new database migration is needed for this service: it uses the existing nullable `agents.implementation_key` column. The public production listings endpoint successfully returns all 23 records and their `execution_available` fields, which confirms the deployed listing query can read the implementation binding column. This does not independently verify the full Alembic revision table or every OAuth/action-approval table. No production migration was run. Render's current start command does not automatically run Alembic; only apply the existing migration chain if direct schema verification shows a required table or column is absent, after confirming a recoverable backup and target database.
 
 The MCP feature adds `summarize_meeting_notes`. It requires `marketplace:read` and `marketplace:write`, an accepted negotiation, a stable idempotency key, and explicit website approval of the exact notes and deal before invoking the existing authenticated backend route. See the separate adapter's README for the full flow. A Gemini key alone does not prove the production settings are active; the current live `/system/status` response reports its active mode and provider.
+# Per-listing Gemini execution
+
+Administrators can configure each marketplace listing independently from
+**Admin → Listings → Edit configuration**. New listings start in discovery-only
+mode. Save the service instructions, expected input, optional JSON object
+schema, and output format, then enable its Gemini switch. A listing is shown as
+executable only when its saved configuration is valid and live Gemini is
+configured on the backend. Turning Gemini off keeps the listing discoverable.
+
+The generic `gemini_marketplace_service` implementation executes the selected
+listing's instructions; it does not reuse the meeting-summarizer prompt. The
+legacy `gemini_text_summarizer` implementation and the
+`summarize_meeting_notes` MCP tool remain available.
+
+The backend schema adds nullable per-listing configuration fields through
+Alembic revision `72dc3f911a2e`. After deploying backend code, apply the normal
+reviewed migration path with `alembic upgrade head`; do not stamp the database
+at head. On an unversioned legacy database, first verify its schema and backup,
+then follow the existing documented legacy-adoption process. This repository
+change does not modify or migrate a live database.
+
+The MCP server now exposes `execute_marketplace_service`, which uses the
+authenticated user's marketplace write scope and requires approval of the
+exact execution request through the AgentsLedge approval flow. It also requires
+an accepted negotiation and stable idempotency key. Configure and deploy the
+backend migration before deploying MCP code that exposes this tool.
