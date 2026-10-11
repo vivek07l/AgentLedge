@@ -21,7 +21,7 @@ services:
       - key: OAUTH_ISSUER
         value: https://agentsledge-backend.onrender.com
       - key: AGENTMESH_MCP_RESOURCE_URL
-        value: https://agentmesh-mcp.onrender.com/mcp
+        value: https://agentsledge-mcp.onrender.com/mcp
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY

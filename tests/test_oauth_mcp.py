@@ -85,6 +85,32 @@ def test_oauth_registration_rejects_untrusted_redirects(client):
     assert response.status_code == 400
 
 
+def test_oauth_authorize_accepts_canonical_live_mcp_resource_and_rejects_legacy_host(client, test_db, monkeypatch):
+    import src.main as main
+
+    canonical_resource = "https://agentsledge-mcp.onrender.com/mcp"
+    legacy_resource = "https://agentmesh-mcp.onrender.com/mcp"
+    monkeypatch.setattr(main.settings, "AGENTMESH_MCP_RESOURCE_URL", canonical_resource)
+    db_user = User(username="oauth_hostname_regression", email="oauth_hostname_regression@example.com",
+                   hashed_password=get_password_hash("Safe-Test-Password-2026!"), is_active=True)
+    test_db.add(db_user)
+    test_db.commit()
+    client_id = client.post("/oauth/register", json={"redirect_uris": [REDIRECT_URI]}).json()["client_id"]
+    _, challenge = _pkce_pair()
+    request = {
+        "response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT_URI,
+        "state": "hostname-regression", "scope": "marketplace:read",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }
+
+    accepted = client.get("/oauth/authorize", params={**request, "resource": canonical_resource})
+    assert accepted.status_code == 200, accepted.text
+    assert "AgentsLedge" in accepted.text
+    rejected = client.get("/oauth/authorize", params={**request, "resource": legacy_resource})
+    assert rejected.status_code == 400
+    assert "supported marketplace scopes" in rejected.json()["detail"]
+
+
 def test_oauth_authorize_rejects_wrong_resource_and_scope(client, test_db):
     db_user = User(username="oauth_reader", email="oauth_reader@example.com", hashed_password=get_password_hash("x"), is_active=True)
     test_db.add(db_user)
