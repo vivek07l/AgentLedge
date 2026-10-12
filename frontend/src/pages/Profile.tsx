@@ -203,6 +203,37 @@ export const Profile: React.FC = () => {
           </Alert>
         )}
 
+        <Paper id="autonomous-execution" sx={{ p: 3, mb: 3, scrollMarginTop: 96 }}>
+          <Typography variant="h5" component="h2" gutterBottom>
+            Autonomous Execution
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            Set one account policy for connected agents. When enabled, eligible marketplace actions can proceed without per-action website approvals, within the limits below. Existing pending approvals are cancelled when you save this enabled policy.
+          </Typography>
+          {autonomousPolicy ? (
+            <Stack spacing={2}>
+              <FormControlLabel
+                control={<Switch checked={autonomousPolicy.enabled} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, enabled: event.target.checked })} />}
+                label={autonomousPolicy.enabled ? 'Autonomous mode enabled' : 'Autonomous mode disabled'}
+              />
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum budget per task" value={autonomousPolicy.max_task_budget} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_task_budget: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum accepted offer" value={autonomousPolicy.max_offer_price} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_offer_price: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Daily token spending limit" value={autonomousPolicy.max_daily_spend} inputProps={{ min: 0.01, max: 10000, step: 1 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_daily_spend: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed categories (comma separated)" value={autonomousCategories} onChange={(event) => setAutonomousCategories(event.target.value)} helperText="Match marketplace category names exactly; a category or listing allowlist is required." /></Grid>
+                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed listing IDs (comma separated)" value={autonomousListingIds} onChange={(event) => setAutonomousListingIds(event.target.value)} helperText="Optional IDs; use this to allow specific listings." /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="New negotiations per day" value={autonomousPolicy.max_negotiation_attempts} inputProps={{ min: 1, max: 100 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_negotiation_attempts: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Provider retry limit" value={autonomousPolicy.max_execution_retries} inputProps={{ min: 0, max: 3 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_execution_retries: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><FormControlLabel control={<Switch checked={autonomousPolicy.auto_review} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, auto_review: event.target.checked })} />} label="Post factual completion reviews automatically" /></Grid>
+              </Grid>
+              <Typography variant="body2" color="text.secondary">
+                Balance: {autonomousPolicy.token_balance} tokens · Spent today: {autonomousPolicy.spent_today} · Daily budget remaining: {autonomousPolicy.remaining_daily_budget}
+              </Typography>
+              <Box><Button variant="contained" onClick={saveAutonomousPolicy} disabled={savingAutonomousPolicy}>{savingAutonomousPolicy ? 'Saving…' : 'Save autonomous policy'}</Button></Box>
+            </Stack>
+          ) : <Typography color="text.secondary">Loading account policy…</Typography>}
+        </Paper>
+
         <Grid container spacing={3}>
           {/* Profile Information */}
           <Grid item xs={12} md={6}>
@@ -310,34 +341,6 @@ export const Profile: React.FC = () => {
           </Grid>
         </Grid>
 
-        <Paper sx={{ p: 3, mt: 3 }}>
-          <Typography variant="h6" gutterBottom>Autonomous marketplace policy</Typography>
-          <Typography color="text.secondary" sx={{ mb: 2 }}>
-            Optional account policy for your connected agents. It can negotiate and execute without per-action website approval only when enabled; marketplace tokens may be spent within these limits. New accounts stay in manual mode.
-          </Typography>
-          {autonomousPolicy ? (
-            <Stack spacing={2}>
-              <FormControlLabel
-                control={<Switch checked={autonomousPolicy.enabled} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, enabled: event.target.checked })} />}
-                label={autonomousPolicy.enabled ? 'Autonomous mode enabled' : 'Autonomous mode disabled'}
-              />
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum budget per task" value={autonomousPolicy.max_task_budget} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_task_budget: Number(event.target.value) })} /></Grid>
-                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum accepted offer" value={autonomousPolicy.max_offer_price} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_offer_price: Number(event.target.value) })} /></Grid>
-                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Daily token spending limit" value={autonomousPolicy.max_daily_spend} inputProps={{ min: 0.01, max: 10000, step: 1 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_daily_spend: Number(event.target.value) })} /></Grid>
-                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed categories (comma separated)" value={autonomousCategories} onChange={(event) => setAutonomousCategories(event.target.value)} helperText="Match marketplace category names exactly; a category or listing allowlist is required." /></Grid>
-                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed listing IDs (comma separated)" value={autonomousListingIds} onChange={(event) => setAutonomousListingIds(event.target.value)} helperText="Optional IDs; use this to allow specific listings." /></Grid>
-                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="New negotiations per day" value={autonomousPolicy.max_negotiation_attempts} inputProps={{ min: 1, max: 100 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_negotiation_attempts: Number(event.target.value) })} /></Grid>
-                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Provider retry limit" value={autonomousPolicy.max_execution_retries} inputProps={{ min: 0, max: 3 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_execution_retries: Number(event.target.value) })} /></Grid>
-                <Grid item xs={12} sm={4}><FormControlLabel control={<Switch checked={autonomousPolicy.auto_review} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, auto_review: event.target.checked })} />} label="Post factual completion reviews automatically" /></Grid>
-              </Grid>
-              <Typography variant="body2" color="text.secondary">
-                Balance: {autonomousPolicy.token_balance} tokens · Spent today: {autonomousPolicy.spent_today} · Daily budget remaining: {autonomousPolicy.remaining_daily_budget}
-              </Typography>
-              <Box><Button variant="contained" onClick={saveAutonomousPolicy} disabled={savingAutonomousPolicy}>{savingAutonomousPolicy ? 'Saving…' : 'Save autonomous policy'}</Button></Box>
-            </Stack>
-          ) : <Typography color="text.secondary">Loading account policy…</Typography>}
-        </Paper>
       </Box>
 
       {/* Change Password Dialog */}

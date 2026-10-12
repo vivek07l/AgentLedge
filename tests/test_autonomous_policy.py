@@ -70,6 +70,36 @@ def test_policy_defaults_disabled_and_requires_explicit_allowlist(client, test_d
     assert test_db.query(AutonomousExecutionPolicy).filter_by(user_id=user_id).count() == 0
 
 
+def test_manual_approval_remains_pending_until_owner_enables_policy(client, test_db):
+    oauth = _oauth(client, test_db, "policy_transition_buyer")
+    website = _website_login(client, "policy_transition_buyer")
+    agent_id = _provider_listing(client, test_db)
+    funded = client.post("/tokens/purchase", headers=website, json={"amount": 20})
+    assert funded.status_code == 200, funded.text
+    payload = {"agent_id": agent_id, "buyer_budget": 8, "initial_offer": 3}
+
+    pending = client.post("/mcp/action-approvals", headers=oauth, json={
+        "action": "start_negotiation", "payload": payload,
+    })
+    assert pending.status_code == 200 and pending.json()["status"] == "pending"
+    website_pending = client.get("/users/me/action-approvals", headers=website)
+    assert website_pending.status_code == 200 and len(website_pending.json()) == 1
+
+    enabled = _enable_policy(client, website, allowed_categories=["Productivity"])
+    assert enabled.status_code == 200, enabled.text
+    assert client.get("/users/me/action-approvals", headers=website).json() == []
+    approval = test_db.query(OAuthActionApproval).filter_by(id=pending.json()["approval_id"]).one()
+    assert approval.status == "cancelled"
+
+    # The policy authorizes the exact next action without creating another
+    # pending approval, while authentication and policy checks remain active.
+    authorized = client.post("/mcp/action-approvals", headers=oauth, json={
+        "action": "start_negotiation", "payload": payload,
+    })
+    assert authorized.status_code == 200 and authorized.json()["autonomous_authorized"] is True
+    assert test_db.query(OAuthActionApproval).count() == 1
+
+
 def test_autonomous_gemini_flow_uses_policy_limits_settlement_and_evidence_review(client, test_db, monkeypatch):
     import src.main as main
 

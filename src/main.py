@@ -1791,6 +1791,13 @@ async def update_my_autonomous_policy(
     if policy.enabled and not json.loads(policy.allowed_categories_json or "[]") and not json.loads(policy.allowed_listing_ids_json or "[]"):
         db.rollback()
         raise HTTPException(status_code=422, detail="Enable at least one allowed category or listing before turning on autonomous mode")
+    if policy.enabled:
+        # Older manual-mode requests must not keep prompting after the owner
+        # explicitly switches this account to policy-based authorization.
+        db.query(OAuthActionApproval).filter(
+            OAuthActionApproval.user_id == current_user.id,
+            OAuthActionApproval.status == "pending",
+        ).update({OAuthActionApproval.status: "cancelled"}, synchronize_session=False)
     policy.updated_at = _utcnow()
     db.commit()
     return _autonomous_policy_payload(db, current_user)
