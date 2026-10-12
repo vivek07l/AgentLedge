@@ -19,10 +19,11 @@ import html
 import time
 from collections import defaultdict, deque
 from threading import Lock
+import asyncio
 from urllib.parse import urlencode
 import math
 
-from src.database.models import User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken, OAuthActionApproval
+from src.database.models import User, Agent, AgentPurchase, AgentInvocation, AgentReview, Negotiation, NegotiationOffer, TokenTransaction, OAuthClient, OAuthAuthorizationCode, OAuthAccessToken, OAuthActionApproval, AutonomousExecutionPolicy
 from src.marketplace.discovery import discover_agents, reputation_for_agent
 from src.marketplace.reviews import create_verified_review
 from src.marketplace.simulation import run_marketplace_simulation
@@ -371,6 +372,18 @@ class ActionApprovalCreate(BaseModel):
 class ActionApprovalDecision(BaseModel):
     decision: Literal["approve", "reject"]
 
+
+class AutonomousPolicyPatch(BaseModel):
+    enabled: Optional[bool] = None
+    max_task_budget: Optional[float] = Field(default=None, ge=0.01, le=1000)
+    max_offer_price: Optional[float] = Field(default=None, ge=0.01, le=1000)
+    max_daily_spend: Optional[float] = Field(default=None, ge=0.01, le=10000)
+    allowed_categories: Optional[List[str]] = Field(default=None, max_length=30)
+    allowed_listing_ids: Optional[List[int]] = Field(default=None, max_length=100)
+    max_negotiation_attempts: Optional[int] = Field(default=None, ge=1, le=100)
+    max_execution_retries: Optional[int] = Field(default=None, ge=0, le=3)
+    auto_review: Optional[bool] = None
+
 class NegotiationCreateRequest(BaseModel):
     agent_id: int
     buyer_budget: float = Field(gt=0, le=100000)
@@ -487,7 +500,7 @@ async def get_current_user(
                     or oauth_token.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
                 raise credentials_exception
             read_route = request.method == "GET" and bool(
-                re.fullmatch(r"/agents(?:/\d+(?:/(?:reputation|reviews))?)?|/negotiations/\d+|/users/me/(?:negotiations|invocations(?:/\d+)?)", request.url.path)
+                re.fullmatch(r"/agents(?:/\d+(?:/(?:reputation|reviews))?)?|/negotiations/\d+|/users/me/(?:autonomous-policy|marketplace-balance|negotiations|invocations(?:/\d+)?)", request.url.path)
             )
             write_route = request.method == "POST" and bool(
                 re.fullmatch(r"/negotiations(?:/\d+/(?:offers|accept|reject))?|/agents/invoke/\d+|/agents/\d+/reviews|/mcp/action-approvals", request.url.path)
@@ -632,12 +645,156 @@ def _approved_action_payload(db: Session, user: User, action: str, payload: dict
     raise HTTPException(status_code=422, detail="Unsupported action approval")
 
 
+def _autonomous_policy(db: Session, user_id: int) -> AutonomousExecutionPolicy | None:
+    return db.query(AutonomousExecutionPolicy).filter(
+        AutonomousExecutionPolicy.user_id == user_id,
+    ).first()
+
+
+def _utc_day_start() -> datetime:
+    now = _utcnow()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _autonomous_spend_today(db: Session, user_id: int, include_reserved: bool = False) -> float:
+    statuses = ("settled", "reserved") if include_reserved else ("settled",)
+    amount = db.query(func.coalesce(func.sum(TokenTransaction.amount), 0.0)).filter(
+        TokenTransaction.user_id == user_id,
+        TokenTransaction.status.in_(statuses),
+        func.coalesce(TokenTransaction.settled_at, TokenTransaction.created_at) >= _utc_day_start(),
+    ).scalar()
+    return float(amount or 0.0)
+
+
+def _autonomous_policy_payload(db: Session, user: User) -> dict:
+    policy = _autonomous_policy(db, user.id)
+    spent = _autonomous_spend_today(db, user.id)
+    if policy is None:
+        values = {
+            "enabled": False, "max_task_budget": 5.0, "max_offer_price": 5.0,
+            "max_daily_spend": 10.0, "allowed_categories": [], "allowed_listing_ids": [],
+            "max_negotiation_attempts": 1, "max_execution_retries": 0, "auto_review": False,
+        }
+    else:
+        values = {
+            "enabled": policy.enabled, "max_task_budget": policy.max_task_budget,
+            "max_offer_price": policy.max_offer_price, "max_daily_spend": policy.max_daily_spend,
+            "allowed_categories": json.loads(policy.allowed_categories_json or "[]"),
+            "allowed_listing_ids": json.loads(policy.allowed_listing_ids_json or "[]"),
+            "max_negotiation_attempts": policy.max_negotiation_attempts,
+            "max_execution_retries": policy.max_execution_retries, "auto_review": policy.auto_review,
+        }
+    return {**values, "token_balance": float(user.token_balance or 0),
+            "spent_today": spent, "remaining_daily_budget": max(0.0, values["max_daily_spend"] - spent)}
+
+
+def _enforce_autonomous_policy(
+    db: Session, user: User, action: str, canonical_payload: dict,
+    policy: AutonomousExecutionPolicy,
+) -> None:
+    """One policy gate shared by every OAuth marketplace mutation."""
+    if not policy.enabled:
+        raise HTTPException(status_code=403, detail="Autonomous execution is not enabled for this account")
+    agent_id = canonical_payload.get("agent_id")
+    negotiation_id = canonical_payload.get("negotiation_id")
+    if agent_id is None and negotiation_id is not None:
+        negotiation = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
+        if negotiation is not None:
+            agent_id = negotiation.agent_id
+    agent = db.query(Agent).filter(Agent.id == agent_id).first() if agent_id is not None else None
+    if not agent or not agent.is_active:
+        raise HTTPException(status_code=404, detail="The service is not active")
+
+    categories = {str(item).strip().casefold() for item in json.loads(policy.allowed_categories_json or "[]") if str(item).strip()}
+    listing_ids = {int(item) for item in json.loads(policy.allowed_listing_ids_json or "[]")}
+    if agent.id not in listing_ids and agent.category.strip().casefold() not in categories:
+        raise HTTPException(status_code=403, detail="This service is outside the account's autonomous allowlist")
+
+    if action == "start_negotiation":
+        today_count = db.query(func.count(Negotiation.id)).filter(
+            Negotiation.buyer_id == user.id, Negotiation.created_at >= _utc_day_start(),
+        ).scalar() or 0
+        if today_count >= policy.max_negotiation_attempts:
+            raise HTTPException(status_code=429, detail="The account's daily autonomous negotiation limit has been reached")
+        budget = float(canonical_payload["buyer_budget"])
+        offer = float(canonical_payload["initial_offer"])
+        if max(budget, offer) > min(policy.max_task_budget, policy.max_offer_price):
+            raise HTTPException(status_code=403, detail="The negotiation budget exceeds the account's per-task or offer limit")
+        if float(user.token_balance or 0) < budget:
+            raise HTTPException(status_code=402, detail="Insufficient token balance for the autonomous negotiation budget")
+    elif action in {"submit_offer", "accept_negotiation"}:
+        price = float(canonical_payload.get("amount", canonical_payload.get("agreed_price", 0)))
+        negotiation = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
+        if not negotiation or negotiation.buyer_id != user.id:
+            raise HTTPException(status_code=403, detail="Only the negotiation buyer may act under this autonomous policy")
+        if price > min(policy.max_task_budget, policy.max_offer_price, negotiation.buyer_budget):
+            raise HTTPException(status_code=403, detail="The offer exceeds the account's autonomous price limit")
+        if float(user.token_balance or 0) < price:
+            raise HTTPException(status_code=402, detail="Insufficient token balance for this offer")
+    elif action == "invoke_service":
+        negotiation = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
+        if not negotiation or negotiation.agent_id != agent.id or negotiation.buyer_id != user.id:
+            raise HTTPException(status_code=403, detail="An accepted negotiation belonging to this account is required")
+        if negotiation.status != "accepted" or negotiation.agreed_price is None:
+            raise HTTPException(status_code=409, detail="The negotiation must be accepted before autonomous execution")
+        price = float(negotiation.agreed_price)
+        if price > min(policy.max_task_budget, policy.max_offer_price):
+            raise HTTPException(status_code=403, detail="The agreed price exceeds the account's autonomous limit")
+        spent = _autonomous_spend_today(db, user.id, include_reserved=True)
+        if spent + price > policy.max_daily_spend:
+            raise HTTPException(status_code=403, detail="The account's daily autonomous spending limit would be exceeded")
+        if float(user.token_balance or 0) < price:
+            raise HTTPException(status_code=402, detail="Insufficient marketplace token balance")
+    elif action == "submit_review":
+        if not policy.auto_review:
+            raise HTTPException(status_code=403, detail="Automatic reviews are disabled by the account policy")
+        if canonical_payload.get("rating") != 5:
+            raise HTTPException(status_code=403, detail="Autonomous reviews are restricted to evidence-based completion reviews")
+
+
+def _authorize_oauth_action(request: Request, db: Session, user: User, action: str, payload: dict) -> None:
+    oauth_user_id = getattr(request.state, "oauth_user_id", None)
+    if oauth_user_id is None:
+        return
+    if oauth_user_id != user.id:
+        raise HTTPException(status_code=403, detail="OAuth identity does not match the authenticated account")
+    policy = _autonomous_policy(db, user.id)
+    if policy and policy.enabled:
+        canonical = _approved_action_payload(db, user, action, payload)
+        _enforce_autonomous_policy(db, user, action, canonical, policy)
+        return
+    _consume_oauth_action_approval(request, db, user, action, payload)
+
+
+def _ensure_evidence_review(db: Session, user: User, invocation: AgentInvocation) -> dict | None:
+    if invocation.status != "succeeded" or invocation.agent.developer_id == user.id:
+        return None
+    existing = db.query(AgentReview).filter(AgentReview.invocation_id == invocation.id).first()
+    if existing:
+        return {"id": existing.id, "rating": existing.rating, "invocation_id": existing.invocation_id}
+    try:
+        saved = json.loads(invocation.output_data or "{}")
+        output_text = str(saved.get("output_text", "")).strip()
+        if not output_text:
+            return None
+        review = create_verified_review(
+            db, user, invocation.agent_id, invocation.id, 5,
+            "Automated execution review: the service completed successfully and returned a non-empty result.",
+        )
+        return {"id": review.id, "rating": review.rating, "invocation_id": review.invocation_id}
+    except (ValueError, PermissionError, FileExistsError, IntegrityError, TypeError, json.JSONDecodeError):
+        db.rollback()
+        return None
+
+
 def _consume_oauth_action_approval(
     request: Request, db: Session, user: User, action: str, payload: dict,
 ) -> None:
     oauth_user_id = getattr(request.state, "oauth_user_id", None)
     if oauth_user_id is None:
         return
+    if oauth_user_id != user.id:
+        raise HTTPException(status_code=403, detail="OAuth identity does not match the authenticated account")
     approval_id = request.headers.get("X-User-Approval", "").strip()
     if not approval_id:
         raise HTTPException(status_code=403, detail="Approve this exact action in the AgentsLedge website first")
@@ -670,6 +827,11 @@ async def create_oauth_action_approval(
     if getattr(request.state, "oauth_user_id", None) != current_user.id:
         raise HTTPException(status_code=403, detail="Action approval requests are available only to AgentMesh OAuth clients")
     canonical = _approved_action_payload(db, current_user, body.action, body.payload)
+    policy = _autonomous_policy(db, current_user.id)
+    if policy and policy.enabled:
+        _enforce_autonomous_policy(db, current_user, body.action, canonical, policy)
+        return {"approval_required": False, "autonomous_authorized": True,
+                "action": body.action, "policy": _autonomous_policy_payload(db, current_user)}
     approval = OAuthActionApproval(
         id=secrets.token_urlsafe(24), user_id=current_user.id, action=body.action,
         payload_json=_canonical_approval_json(canonical),
@@ -1098,7 +1260,16 @@ async def start_negotiation(
         raise HTTPException(status_code=404, detail="Service not found")
     if agent.minimum_price is not None and (agent.minimum_price < 0 or agent.minimum_price > agent.price):
         raise HTTPException(status_code=409, detail="This listing has an invalid provider minimum price")
-    _consume_oauth_action_approval(http_request, db, current_user, "start_negotiation", request.model_dump())
+    if getattr(http_request.state, "oauth_user_id", None) == current_user.id:
+        existing_policy = _autonomous_policy(db, current_user.id)
+        if existing_policy and existing_policy.enabled:
+            existing = db.query(Negotiation).filter(
+                Negotiation.buyer_id == current_user.id, Negotiation.agent_id == agent.id,
+                Negotiation.status == "accepted",
+            ).order_by(Negotiation.created_at.desc()).first()
+            if existing:
+                return negotiation_payload(existing)
+    _authorize_oauth_action(http_request, db, current_user, "start_negotiation", request.model_dump())
     negotiation = create_negotiation(db, current_user, agent, request.buyer_budget, request.initial_offer)
     return negotiation_payload(negotiation)
 
@@ -1122,7 +1293,7 @@ async def submit_buyer_offer(
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
-    _consume_oauth_action_approval(http_request, db, current_user, "submit_offer",
+    _authorize_oauth_action(http_request, db, current_user, "submit_offer",
                                    {"negotiation_id": negotiation_id, "amount": request.amount})
     return negotiation_payload(buyer_offer(db, item, current_user, request.amount))
 
@@ -1134,7 +1305,7 @@ async def accept_negotiation_counter(
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
-    _consume_oauth_action_approval(http_request, db, current_user, "accept_negotiation", {"negotiation_id": negotiation_id})
+    _authorize_oauth_action(http_request, db, current_user, "accept_negotiation", {"negotiation_id": negotiation_id})
     return negotiation_payload(accept_counter(db, item, current_user))
 
 @app.post("/negotiations/{negotiation_id}/reject")
@@ -1145,7 +1316,7 @@ async def reject_negotiation_endpoint(
     item = db.query(Negotiation).filter(Negotiation.id == negotiation_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Negotiation not found")
-    _consume_oauth_action_approval(http_request, db, current_user, "reject_negotiation", {"negotiation_id": negotiation_id})
+    _authorize_oauth_action(http_request, db, current_user, "reject_negotiation", {"negotiation_id": negotiation_id})
     return negotiation_payload(reject_negotiation(db, item, current_user))
 
 @app.get("/users/me/negotiations")
@@ -1293,6 +1464,8 @@ async def invoke_agent(
             raise HTTPException(status_code=409, detail="This Idempotency-Key was already used with different input")
         if existing.status in ("succeeded", "demo"):
             stored = json.loads(existing.output_data or "{}")
+            autonomous = _autonomous_policy(db, current_user.id) if getattr(http_request.state, "oauth_user_id", None) == current_user.id else None
+            automatic_review = _ensure_evidence_review(db, current_user, existing) if autonomous and autonomous.enabled and autonomous.auto_review and existing.status == "succeeded" else None
             return {
                 **stored, "output_text": stored.get("output_text", ""),
                 "invocation_id": existing.id, "demo_mode": existing.status == "demo",
@@ -1300,6 +1473,7 @@ async def invoke_agent(
                 "charged_tokens": existing.token_transaction.amount if existing.token_transaction and existing.token_transaction.status == "settled" else 0,
                 "agreed_price": existing.negotiation.agreed_price if existing.negotiation else 0,
                 "remaining_balance": current_user.token_balance,
+                "automatic_review": automatic_review,
             }
         raise HTTPException(status_code=409, detail=f"This idempotency key already has execution status '{existing.status}'")
     if negotiation_id is not None:
@@ -1318,16 +1492,29 @@ async def invoke_agent(
     if live_provider_is_misconfigured():
         raise HTTPException(status_code=503, detail=f"AI_MODE=live but the {selected_provider()} API key is not configured. No demo response was substituted and no tokens were charged.")
 
-    _consume_oauth_action_approval(http_request, db, current_user, "invoke_service", {
+    _authorize_oauth_action(http_request, db, current_user, "invoke_service", {
         "agent_id": agent_id, "negotiation_id": negotiation_id,
         "input_data": input_data, "idempotency_key": request_key,
     })
     
+    auto_policy = None
+    if getattr(http_request.state, "oauth_user_id", None) == current_user.id:
+        auto_policy = _autonomous_policy(db, current_user.id)
+        if not auto_policy or not auto_policy.enabled:
+            auto_policy = None
     reserved_invocation = None
     reserved_transaction = None
     charge = float(negotiation.agreed_price) if negotiation else 0.0
     will_execute_live = has_live_ai_key()
     if will_execute_live and charge > 0:
+        if auto_policy:
+            locked_policy = db.query(AutonomousExecutionPolicy).filter(
+                AutonomousExecutionPolicy.user_id == current_user.id,
+            ).with_for_update().first()
+            spent_or_reserved = _autonomous_spend_today(db, current_user.id, include_reserved=True)
+            if not locked_policy or not locked_policy.enabled or spent_or_reserved + charge > locked_policy.max_daily_spend:
+                db.rollback()
+                raise HTTPException(status_code=403, detail="The account's daily autonomous spending limit would be exceeded")
         if not reserve_buyer_tokens(db, current_user.id, charge):
             db.rollback()
             raise HTTPException(status_code=402, detail="Insufficient token balance for the agreed price")
@@ -1375,9 +1562,17 @@ async def invoke_agent(
         if demo_mode:
             result = make_demo_response(agent_key, input_data)
         else:
-            result = await call_builtin_agent(agent_key, agent_instance, execution_data)
-        if result.get("status") == "error" or result.get("error"):
-            raise RuntimeError("Agent returned an unsuccessful result")
+            retries = auto_policy.max_execution_retries if auto_policy else 0
+            for attempt in range(retries + 1):
+                try:
+                    result = await call_builtin_agent(agent_key, agent_instance, execution_data)
+                    if result.get("status") == "error" or result.get("error"):
+                        raise RuntimeError("Agent returned an unsuccessful result")
+                    break
+                except Exception:
+                    if attempt >= retries:
+                        raise
+                    await asyncio.sleep(0.1 * (attempt + 1))
 
         output_text = (
             result.get("output_text")
@@ -1426,6 +1621,9 @@ async def invoke_agent(
         db.commit()
         db.refresh(db_invocation)
         db.refresh(current_user)
+        automatic_review = _ensure_evidence_review(db, current_user, db_invocation) if (
+            auto_policy and auto_policy.auto_review and not demo_mode and db_invocation.status == "succeeded"
+        ) else None
         return {
             **response_result,
             "output_text": output_text,
@@ -1437,6 +1635,7 @@ async def invoke_agent(
             "settlement_status": reserved_transaction.status if reserved_transaction else "not_charged",
             "remaining_balance": current_user.token_balance,
             "idempotency_key": request_key,
+            "automatic_review": automatic_review,
         }
         
     except HTTPException:
@@ -1557,6 +1756,53 @@ async def purchase_tokens(
 @app.get("/users/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
+
+
+@app.get("/users/me/autonomous-policy")
+async def get_my_autonomous_policy(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _autonomous_policy_payload(db, current_user)
+
+
+@app.patch("/users/me/autonomous-policy")
+async def update_my_autonomous_policy(
+    body: AutonomousPolicyPatch, current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
+):
+    changes = body.model_dump(exclude_unset=True)
+    policy = _autonomous_policy(db, current_user.id)
+    if policy is None:
+        policy = AutonomousExecutionPolicy(user_id=current_user.id)
+        db.add(policy)
+        db.flush()
+    if "allowed_categories" in changes:
+        categories = changes.pop("allowed_categories")
+        if categories is not None:
+            cleaned = sorted({item.strip() for item in categories if item.strip()})
+            if any(len(item) > 80 for item in cleaned):
+                raise HTTPException(status_code=422, detail="Allowed categories must be 80 characters or fewer")
+            policy.allowed_categories_json = json.dumps(cleaned)
+    if "allowed_listing_ids" in changes:
+        listing_ids = changes.pop("allowed_listing_ids")
+        if listing_ids is not None:
+            if any(item <= 0 for item in listing_ids):
+                raise HTTPException(status_code=422, detail="Allowed listing IDs must be positive")
+            policy.allowed_listing_ids_json = json.dumps(sorted(set(listing_ids)))
+    for key, value in changes.items():
+        setattr(policy, key, value)
+    if policy.enabled and not json.loads(policy.allowed_categories_json or "[]") and not json.loads(policy.allowed_listing_ids_json or "[]"):
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Enable at least one allowed category or listing before turning on autonomous mode")
+    policy.updated_at = _utcnow()
+    db.commit()
+    return _autonomous_policy_payload(db, current_user)
+
+
+@app.get("/users/me/marketplace-balance")
+async def get_my_marketplace_balance(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    policy = _autonomous_policy(db, current_user.id)
+    daily_limit = policy.max_daily_spend if policy else 10.0
+    spent = _autonomous_spend_today(db, current_user.id)
+    return {"token_balance": float(current_user.token_balance or 0), "spent_today": spent,
+            "daily_limit": daily_limit, "remaining_daily_budget": max(0.0, daily_limit - spent)}
 
 @app.get("/users/me/provider-stats")
 async def get_provider_stats(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1704,7 +1950,7 @@ async def create_agent_review(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _consume_oauth_action_approval(http_request, db, current_user, "submit_review", {
+    _authorize_oauth_action(http_request, db, current_user, "submit_review", {
         "agent_id": agent_id, **review.model_dump(),
     })
     try:

@@ -46,6 +46,7 @@ def test_fresh_database_reaches_model_compatible_head(tmp_path):
     assert "purchase_price" in {column["name"] for column in inspector.get_columns("agent_purchases")}
     assert "tokens_remaining" in {column["name"] for column in inspector.get_columns("agent_purchases")}
     assert "output_data" in {column["name"] for column in inspector.get_columns("agent_invocations")}
+    assert "autonomous_execution_policies" in inspector.get_table_names()
 
 
 def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
@@ -72,6 +73,7 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
         connection.execute(text("ALTER TABLE agents DROP COLUMN input_schema_json"))
         connection.execute(text("ALTER TABLE agents DROP COLUMN output_format"))
         connection.execute(text("DROP TABLE oauth_action_approvals"))
+        connection.execute(text("DROP TABLE autonomous_execution_policies"))
         connection.execute(text("ALTER TABLE agent_purchases DROP COLUMN tokens_remaining"))
     engine.dispose()
 
@@ -89,8 +91,9 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
     with engine.connect() as connection:
         # The adopted baseline is downstream of migration 418451761ac7, so
         # its missing purchase column must be added before the baseline stamp.
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "72dc3f911a2e"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "8a72d421c550"
     assert {"oauth_action_approvals", "negotiations", "negotiation_offers", "token_transactions"} <= set(inspector.get_table_names())
+    assert "autonomous_execution_policies" in inspector.get_table_names()
     for table_name, table in Base.metadata.tables.items():
         assert table_name in inspector.get_table_names()
         assert set(table.columns.keys()) <= {column["name"] for column in inspector.get_columns(table_name)}
@@ -100,6 +103,32 @@ def test_verified_unversioned_database_adopts_and_preserves_purchases(tmp_path):
         )).one()
         assert purchase == (7, 12.5, 0.0)
         assert connection.execute(text("SELECT token_balance FROM users WHERE id = 1")).scalar_one() == 45
+    engine.dispose()
+
+
+def test_autonomous_policy_migration_is_additive_and_defaults_off(tmp_path):
+    db_path = tmp_path / "autonomous-policy.sqlite3"
+    before = _alembic(db_path, "upgrade", "72dc3f911a2e")
+    assert before.returncode == 0, before.stdout + before.stderr
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO users (id, username, email, hashed_password, is_developer, is_admin, token_balance, created_at, is_active) "
+            "VALUES (1, 'kept-user', 'kept@example.test', 'hash', 0, 0, 13, CURRENT_TIMESTAMP, 1)"
+        ))
+        assert "autonomous_execution_policies" not in inspect(connection).get_table_names()
+    engine.dispose()
+
+    upgraded = _alembic(db_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT username, token_balance FROM users WHERE id=1")).one() == ("kept-user", 13.0)
+        columns = {column["name"] for column in inspect(connection).get_columns("autonomous_execution_policies")}
+        assert {"user_id", "enabled", "max_task_budget", "max_offer_price", "max_daily_spend",
+                "allowed_categories_json", "allowed_listing_ids_json", "max_negotiation_attempts",
+                "max_execution_retries", "auto_review"} <= columns
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "8a72d421c550"
     engine.dispose()
 
 
