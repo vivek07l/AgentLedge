@@ -86,6 +86,24 @@ class OAuthActionApproval(Base):
     approved_at = Column(DateTime, nullable=True)
     consumed_at = Column(DateTime, nullable=True)
 
+
+class AutonomousExecutionPolicy(Base):
+    """Explicit per-account limits for autonomous OAuth marketplace actions."""
+    __tablename__ = "autonomous_execution_policies"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    max_task_budget = Column(Float, nullable=False, default=5.0, server_default="5")
+    max_offer_price = Column(Float, nullable=False, default=5.0, server_default="5")
+    max_daily_spend = Column(Float, nullable=False, default=10.0, server_default="10")
+    allowed_categories_json = Column(Text, nullable=False, default="[]", server_default="[]")
+    allowed_listing_ids_json = Column(Text, nullable=False, default="[]", server_default="[]")
+    max_negotiation_attempts = Column(Integer, nullable=False, default=1, server_default="1")
+    max_execution_retries = Column(Integer, nullable=False, default=0, server_default="0")
+    auto_review = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class Agent(Base):
     __tablename__ = "agents"
 

@@ -19,12 +19,16 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  FormControlLabel,
+  Switch,
+  Stack,
 } from '@mui/material';
 import { Delete, Key } from '@mui/icons-material';
 import { useAuth } from '../store/AuthContext';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import { authService } from '../services/auth';
+import { autonomousPolicyService, AutonomousPolicy } from '../services/autonomousPolicy';
 
 const validationSchema = Yup.object({
   username: Yup.string().required('Username is required'),
@@ -57,6 +61,52 @@ export const Profile: React.FC = () => {
   const [apiKeys, setApiKeys] = React.useState<
     { id: string; name: string; created_at: string }[]
   >([]);
+  const [autonomousPolicy, setAutonomousPolicy] = React.useState<AutonomousPolicy | null>(null);
+  const [autonomousCategories, setAutonomousCategories] = React.useState('');
+  const [autonomousListingIds, setAutonomousListingIds] = React.useState('');
+  const [savingAutonomousPolicy, setSavingAutonomousPolicy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!token) return;
+    autonomousPolicyService.get(token).then((policy) => {
+      setAutonomousPolicy(policy);
+      setAutonomousCategories(policy.allowed_categories.join(', '));
+      setAutonomousListingIds(policy.allowed_listing_ids.join(', '));
+    }).catch(() => {
+      setError('Autonomous settings are unavailable. Update the backend before configuring this feature.');
+    });
+  }, [token]);
+
+  const saveAutonomousPolicy = async () => {
+    if (!token || !autonomousPolicy) return;
+    const categories = autonomousCategories.split(',').map((item) => item.trim()).filter(Boolean);
+    const listingIds = autonomousListingIds.split(',').map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0);
+    if (autonomousPolicy.enabled && categories.length === 0 && listingIds.length === 0) {
+      setError('Add at least one allowed category or listing ID before enabling autonomous mode.');
+      return;
+    }
+    setSavingAutonomousPolicy(true);
+    setError(null);
+    try {
+      const saved = await autonomousPolicyService.update(token, {
+        enabled: autonomousPolicy.enabled,
+        max_task_budget: Number(autonomousPolicy.max_task_budget),
+        max_offer_price: Number(autonomousPolicy.max_offer_price),
+        max_daily_spend: Number(autonomousPolicy.max_daily_spend),
+        allowed_categories: categories,
+        allowed_listing_ids: listingIds,
+        max_negotiation_attempts: Number(autonomousPolicy.max_negotiation_attempts),
+        max_execution_retries: Number(autonomousPolicy.max_execution_retries),
+        auto_review: autonomousPolicy.auto_review,
+      });
+      setAutonomousPolicy(saved);
+      setSuccess('Autonomous execution policy saved.');
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Could not save autonomous execution settings.');
+    } finally {
+      setSavingAutonomousPolicy(false);
+    }
+  };
 
   const formik = useFormik({
     initialValues: {
@@ -259,6 +309,35 @@ export const Profile: React.FC = () => {
             </Paper>
           </Grid>
         </Grid>
+
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Typography variant="h6" gutterBottom>Autonomous marketplace policy</Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            Optional account policy for your connected agents. It can negotiate and execute without per-action website approval only when enabled; marketplace tokens may be spent within these limits. New accounts stay in manual mode.
+          </Typography>
+          {autonomousPolicy ? (
+            <Stack spacing={2}>
+              <FormControlLabel
+                control={<Switch checked={autonomousPolicy.enabled} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, enabled: event.target.checked })} />}
+                label={autonomousPolicy.enabled ? 'Autonomous mode enabled' : 'Autonomous mode disabled'}
+              />
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum budget per task" value={autonomousPolicy.max_task_budget} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_task_budget: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Maximum accepted offer" value={autonomousPolicy.max_offer_price} inputProps={{ min: 0.01, max: 1000, step: 0.5 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_offer_price: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Daily token spending limit" value={autonomousPolicy.max_daily_spend} inputProps={{ min: 0.01, max: 10000, step: 1 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_daily_spend: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed categories (comma separated)" value={autonomousCategories} onChange={(event) => setAutonomousCategories(event.target.value)} helperText="Match marketplace category names exactly; a category or listing allowlist is required." /></Grid>
+                <Grid item xs={12} sm={6}><TextField fullWidth label="Allowed listing IDs (comma separated)" value={autonomousListingIds} onChange={(event) => setAutonomousListingIds(event.target.value)} helperText="Optional IDs; use this to allow specific listings." /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="New negotiations per day" value={autonomousPolicy.max_negotiation_attempts} inputProps={{ min: 1, max: 100 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_negotiation_attempts: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><TextField fullWidth type="number" label="Provider retry limit" value={autonomousPolicy.max_execution_retries} inputProps={{ min: 0, max: 3 }} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, max_execution_retries: Number(event.target.value) })} /></Grid>
+                <Grid item xs={12} sm={4}><FormControlLabel control={<Switch checked={autonomousPolicy.auto_review} onChange={(event) => setAutonomousPolicy({ ...autonomousPolicy, auto_review: event.target.checked })} />} label="Post factual completion reviews automatically" /></Grid>
+              </Grid>
+              <Typography variant="body2" color="text.secondary">
+                Balance: {autonomousPolicy.token_balance} tokens · Spent today: {autonomousPolicy.spent_today} · Daily budget remaining: {autonomousPolicy.remaining_daily_budget}
+              </Typography>
+              <Box><Button variant="contained" onClick={saveAutonomousPolicy} disabled={savingAutonomousPolicy}>{savingAutonomousPolicy ? 'Saving…' : 'Save autonomous policy'}</Button></Box>
+            </Stack>
+          ) : <Typography color="text.secondary">Loading account policy…</Typography>}
+        </Paper>
       </Box>
 
       {/* Change Password Dialog */}
