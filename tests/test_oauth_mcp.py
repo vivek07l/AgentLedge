@@ -66,6 +66,9 @@ def test_oauth_pkce_exchange_is_per_user_scoped_and_read_only(client, test_db):
     headers = {"Authorization": f"Bearer {data['access_token']}"}
     assert client.get("/agents", headers=headers).status_code == 200
     assert client.get("/marketplace/categories", headers=headers).status_code == 200
+    own_negotiations = client.get("/users/me/negotiations", headers=headers)
+    assert own_negotiations.status_code == 200
+    assert own_negotiations.json() == []
     assert client.post("/tokens/purchase", headers=headers, json={"amount": 10}).status_code == 403
     assert client.get("/users/me", headers=headers).status_code == 403
     introspection = client.post("/oauth/introspect", headers=headers)
@@ -248,7 +251,7 @@ def test_oauth_scope_consent_persists_read_write_and_mcp_writes_are_independentl
     })
     assert listing.status_code == 200, listing.text
     service = listing.json()
-    test_db.query(Agent).filter(Agent.id == service["id"]).one().implementation_key = "resume_reviewer"
+    test_db.query(Agent).filter(Agent.id == service["id"]).one().implementation_key = "gemini_text_summarizer"
     test_db.commit()
     # Token purchase is intentionally outside the MCP OAuth allowlist.
     assert client.post("/tokens/purchase", headers=write_headers, json={"amount": 20}).status_code == 403
@@ -263,6 +266,9 @@ def test_oauth_scope_consent_persists_read_write_and_mcp_writes_are_independentl
     assert started.status_code == 200, started.text
     negotiation = started.json()
     assert negotiation["status"] == "awaiting_buyer"
+    own_negotiations = client.get("/users/me/negotiations", headers=write_headers)
+    assert own_negotiations.status_code == 200, own_negotiations.text
+    assert [item["id"] for item in own_negotiations.json()] == [negotiation["id"]]
     assert client.get(f"/negotiations/{negotiation['id']}", headers=write_headers).status_code == 200
     assert client.post(f"/negotiations/{negotiation['id']}/accept", headers=read_headers).status_code == 403
     accept_approval = _approve_action(client, write_headers, website_headers, "accept_negotiation", {
@@ -272,8 +278,11 @@ def test_oauth_scope_consent_persists_read_write_and_mcp_writes_are_independentl
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["status"] == "accepted"
 
+    monkeypatch.setattr(main, "_gemini_summarizer_is_configured", lambda: True)
     monkeypatch.setattr(main, "has_live_ai_key", lambda: True)
+    provider_calls = []
     async def live_result(*args, **kwargs):
+        provider_calls.append((args, kwargs))
         return {"output_text": "Persisted provider result", "tokens_used": 4}
     monkeypatch.setattr(main, "call_builtin_agent", live_result)
     invoke_input = {"input_text": "Review my resume"}
@@ -282,20 +291,30 @@ def test_oauth_scope_consent_persists_read_write_and_mcp_writes_are_independentl
         "agent_id": service["id"], "negotiation_id": negotiation["id"],
         "input_data": invoke_input, "idempotency_key": invoke_key,
     })
+    outsider_client, outsider_verifier, outsider_code = _authorize(client, test_db, username="write_outsider", scope="marketplace:read marketplace:write")
+    outsider_token = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": outsider_code,
+        "redirect_uri": REDIRECT_URI, "client_id": outsider_client, "code_verifier": outsider_verifier, "resource": RESOURCE}).json()["access_token"]
+    outsider_headers = {"Authorization": f"Bearer {outsider_token}"}
+    denied = client.post(f"/agents/invoke/{service['id']}", headers={**outsider_headers, **invoke_approval, "Idempotency-Key": invoke_key}, json={
+        **invoke_input, "negotiation_id": negotiation["id"],
+    })
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["detail"] == "An authorized negotiation for this service is required"
+    assert provider_calls == []
     invoked = client.post(f"/agents/invoke/{service['id']}", headers={**write_headers, **invoke_approval, "Idempotency-Key": invoke_key}, json={
         **invoke_input, "negotiation_id": negotiation["id"],
     })
     assert invoked.status_code == 200, invoked.text
     assert invoked.json()["execution_mode"] == "live"
     assert invoked.json()["provider"] == main.selected_provider()
+    assert len(provider_calls) == 1
     invocation_id = invoked.json()["invocation_id"]
     stored_result = client.get(f"/users/me/invocations/{invocation_id}", headers=write_headers)
     assert stored_result.status_code == 200, stored_result.text
     assert stored_result.json()["result"]["output_text"] == "Persisted provider result"
-    outsider_client, outsider_verifier, outsider_code = _authorize(client, test_db, username="write_outsider", scope="marketplace:read marketplace:write")
-    outsider_token = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": outsider_code,
-        "redirect_uri": REDIRECT_URI, "client_id": outsider_client, "code_verifier": outsider_verifier, "resource": RESOURCE}).json()["access_token"]
-    outsider_headers = {"Authorization": f"Bearer {outsider_token}"}
+    outsider_negotiations = client.get("/users/me/negotiations", headers=outsider_headers)
+    assert outsider_negotiations.status_code == 200, outsider_negotiations.text
+    assert negotiation["id"] not in {item["id"] for item in outsider_negotiations.json()}
     assert client.get(f"/negotiations/{negotiation['id']}", headers=outsider_headers).status_code == 403
     assert client.get(f"/users/me/invocations/{invocation_id}", headers=outsider_headers).status_code == 404
     review_payload = {"agent_id": service["id"], "invocation_id": invocation_id, "rating": 5, "review_text": "Clear and helpful"}

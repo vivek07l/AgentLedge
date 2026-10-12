@@ -487,7 +487,7 @@ async def get_current_user(
                     or oauth_token.audience != settings.AGENTMESH_MCP_RESOURCE_URL):
                 raise credentials_exception
             read_route = request.method == "GET" and bool(
-                re.fullmatch(r"/agents(?:/\d+(?:/(?:reputation|reviews))?)?|/negotiations/\d+|/users/me/invocations(?:/\d+)?", request.url.path)
+                re.fullmatch(r"/agents(?:/\d+(?:/(?:reputation|reviews))?)?|/negotiations/\d+|/users/me/(?:negotiations|invocations(?:/\d+)?)", request.url.path)
             )
             write_route = request.method == "POST" and bool(
                 re.fullmatch(r"/negotiations(?:/\d+/(?:offers|accept|reject))?|/agents/invoke/\d+|/agents/\d+/reviews|/mcp/action-approvals", request.url.path)
